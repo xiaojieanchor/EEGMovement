@@ -415,7 +415,7 @@ class Handler(BaseHTTPRequestHandler):
             if len(matches)!=1:return self.send(409,{'error':'需要在本机按设备身份选择配对文件'})
             return self.send(200,json.loads(matches[0].read_text('utf-8')))
         if path=='/api/intent/status':
-            if HUB.new_device_mode:return self.send(200,HUB.intent.snapshot())
+            if HUB.new_device_mode:return self.send(200,dict(HUB.intent.snapshot(),readiness=HUB.ml.inference_readiness()))
             return self.send(200,dict(**HUB.intent.snapshot(),control=HUB.intent_control.snapshot()))
         if path=='/api/calibration/status':return self.send(200,HUB.calibration.snapshot())
         if path=='/api/calibration/history':return self.send(200,dict(results=HUB.calibration.history()))
@@ -525,7 +525,10 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path=='/api/source':HUB.set_source(data['mode'],data.get('session'))
             elif self.path=='/api/server/connect':
                 password=data.get('password','')
-                if not password and not HUB.remote.password:raise ValueError('请输入SSH密码；仅保存在当前进程内存')
+                if HUB.new_device_mode and not password:
+                    from gnautilus_ml.credentials import load_credential
+                    password=HUB.remote.password or load_credential(HUB.remote.profile)
+                if not password and not HUB.remote.password:raise ValueError('请输入SSH密码；自动连接凭据由本机 Windows 凭据管理器保管')
                 if HUB.new_device_mode:HUB.intent.invalidate('private_compute_manual_reconnect');HUB.vr.stop_test()
                 threading.Thread(target=HUB.remote.connect,args=(password or HUB.remote.password,),daemon=True).start()
             elif self.path=='/api/server/disconnect':

@@ -19,14 +19,16 @@ class MLManager:
         except Exception as error:self.error=str(error)
         return self.snapshot()
     def connection_tick(self,now=None):
-        now=time.monotonic() if now is None else now
+        realtime=now is None;now=time.monotonic() if realtime else now
+        epoch=getattr(self.bridge,'connection_epoch',None)
         if self.bridge.auto_connect_suspended or self.bridge.status.get('connecting'):return
         if self.bridge.status.get('ssh_connected') and self.bridge.status.get('worker_connected'):
             self.refresh()
             if not self.error:self.retry_delay=2;self.restore_selected(now);return
+            if self.bridge.auto_connect_suspended:return
         if now<self.retry_at or not self.bridge.password:return
         self.hub.intent.invalidate('private_compute_link_reconnect',preserve_mode=True)
-        ok=self.bridge.connect();self.retry_at=now+self.retry_delay;self.retry_delay=min(30,self.retry_delay*2)
+        ok=self.bridge.connect(expected_epoch=epoch);self.retry_at=(time.monotonic() if realtime else now)+self.retry_delay;self.retry_delay=min(30,self.retry_delay*2)
         if ok:self.refresh();self.restore_selected(now)
     def restore_selected(self,now=None):
         now=time.monotonic() if now is None else now
@@ -34,6 +36,8 @@ class MLManager:
         try:
             mid=self.cached.get('selected');loaded=self.cached.get('loaded')
             if not mid:self.restore_state={'state':'selection_required','message':'尚未选择模型；不会按分数自动替换'};return
+            if not (self.updated and time.time()-self.updated<8 and not self.error and self.bridge.status.get('ssh_connected') and self.bridge.status.get('worker_connected')):
+                self.restore_state={'state':'waiting_connection','model_id':mid};return
             meta=next((m for m in self.cached.get('models',[]) if m['model_id']==mid),None)
             if meta is None:self.restore_state={'state':'selected_model_missing','model_id':mid};return
             if loaded:
@@ -54,6 +58,15 @@ class MLManager:
             try:self.connection_tick()
             except Exception as error:self.error=str(error)
     def switching(self):return self.switch['state']=='switching'
+    def inference_readiness(self):
+        fresh=bool(self.updated and time.time()-self.updated<8 and not self.error and self.bridge.status.get('worker_connected') and self.bridge.status.get('ssh_connected'))
+        loaded=self.cached.get('loaded');meta=next((m for m in self.cached.get('models',[]) if m['model_id']==loaded),None)
+        count=sum(bool(m.get('runtime_accepted')) for m in self.cached.get('models',[]))
+        if not fresh:code,message='compute_disconnected',('计算连接已暂停；请在设备页检查状态后重新连接' if self.bridge.auto_connect_suspended else '计算连接未就绪；中枢将按退避计划自动重连')
+        elif not meta:code,message='model_not_loaded','等待恢复原先选择的模型；尚未选择时请到模型库选择'
+        elif not meta.get('runtime_accepted'):code,message='offline_model','已加载公开数据离线分类器，可做开发回放；当前没有匹配 g.Nautilus 实时输入的导航合同'
+        else:code,message='ready','模型实时合同已配置；启动后仍核对真实输入、连续性与电气质量'
+        return dict(can_start=code=='ready',code=code,message=message,model_id=loaded if fresh else None,runtime_model_count=count)
     def request_refresh(self):
         if not self.bridge.status.get('ssh_connected'):raise ValueError('请先连接新的私有计算服务器')
         return self.refresh()
@@ -66,6 +79,7 @@ class MLManager:
     def snapshot(self):
         with self.lock:
             cache=self.cached;groups={};selected=cache.get('selected');fresh=bool(self.updated and time.time()-self.updated<8 and not self.error and self.bridge.status.get('ssh_connected') and self.bridge.status.get('worker_connected'));loaded=cache.get('loaded') if fresh else None
+            restore=self.restore_state if fresh else dict(state='waiting_connection',model_id=selected,message='等待计算连接核验；缓存中的模型不表示当前已加载')
             for m in cache.get('models',[]):
                 alg=m['algorithm'];metrics=m.get('metrics',{})
                 def score(key):
@@ -75,12 +89,12 @@ class MLManager:
                 groups.setdefault(alg,dict(id=alg,title=ALGORITHMS.get(alg,alg),versions=[]))['versions'].append(row)
             return dict(schema='gnautilus.models.v1',models=cache.get('models',[]),groups=list(groups.values()),total_versions=len(cache.get('models',[])),active={'model_id':loaded} if loaded else None,
                         current_model_id=loaded,selected_model_id=selected,server_connected=bool(self.bridge.status.get('ssh_connected')),remote_fresh=fresh,refreshed_at=self.updated or None,error=self.error,
-                        refreshing=False,refresh_state='failed' if self.error else 'complete' if self.updated else 'idle',switching=self.switching(),switch=self.switch,read_only=False,restore=self.restore_state,
+                        refreshing=False,refresh_state='failed' if self.error else 'complete' if self.updated else 'idle',switching=self.switching(),switch=self.switch,read_only=False,restore=restore,
                         runtime_model_count=sum(bool(m.get('runtime_accepted')) for m in cache.get('models',[])))
-    def training(self):return dict(schema='gnautilus.training.v1',jobs=self.cached.get('jobs',[]),fresh=bool(self.updated and time.time()-self.updated<8),updated_at=self.updated,error=self.error,server=self.bridge.status)
+    def training(self):return dict(schema='gnautilus.training.v1',jobs=self.cached.get('jobs',[]),fresh=bool(self.updated and time.time()-self.updated<8 and not self.error and self.bridge.status.get('ssh_connected') and self.bridge.status.get('worker_connected')),updated_at=self.updated,error=self.error,server=dict(self.bridge.status))
     def preparation(self,state):
         import datetime
-        now=datetime.datetime.now(datetime.timezone.utc).isoformat();fresh=bool(self.updated and time.time()-self.updated<8 and self.bridge.status.get('worker_connected'))
+        now=datetime.datetime.now(datetime.timezone.utc).isoformat();fresh=bool(self.updated and time.time()-self.updated<8 and not self.error and self.bridge.status.get('ssh_connected') and self.bridge.status.get('worker_connected'))
         datasets=self.cached.get('datasets',[]);roles={r.get('role') for d in datasets for r in d.get('records',[])};data_ready={'train','development'}<=roles
         loaded=self.cached.get('loaded');d=state.get('gnautilus',{}).get('descriptor') or {};rows=[]
         def add(key,label,ok,text,source):rows.append(dict(id=key,label=label,status='ok' if ok else 'warn',summary=text,source=source,checked_at=now,age_ms=0))

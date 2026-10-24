@@ -20,7 +20,8 @@
  function current(){return snapshot&&performance.now()-last<800?snapshot:null}
  function buttons(){if(document.body.dataset.deviceTransition==='gnautilus'&&snapshot?.schema!=='gnautilus.intent.v1'){$('intentStart').disabled=true;$('intentStart').textContent='新模型未配置';$('intentEnable').disabled=true;$('intentEnable').textContent='模型动作未配置';$('intentApplyThreshold').disabled=true;return}const s=current(),running=!!s?.inference_enabled,motion=!!s?.control?.enabled;
   $('intentStart').textContent=stopping?'停止中…':pendingStart?'取消启动':!s?'同步状态':running?'停止推理':'启动推理';
-  $('intentStart').disabled=stopping||!pendingStart&&(!s||pending);$('intentStart').setAttribute('aria-pressed',String(running));$('intentStart').dataset.enabled=String(running);
+  $('intentStart').disabled=stopping||!pendingStart&&(!s||pending||!running&&s?.readiness?.can_start===false);
+  if(!running&&s?.readiness?.can_start===false)$('intentStart').textContent=({compute_disconnected:'等待计算连接',model_not_loaded:'等待模型加载',offline_model:'需要实时导航模型'})[s.readiness.code]||'等待模型就绪';$('intentStart').setAttribute('aria-pressed',String(running));$('intentStart').dataset.enabled=String(running);
   $('intentEnable').textContent=pending&&!pendingStart?'处理中…':!s?'同步状态':motion?'关闭动作':'启用动作';
   $('intentEnable').disabled=!s||pending||stopping||!running;$('intentEnable').setAttribute('aria-pressed',String(motion));$('intentEnable').dataset.enabled=String(motion);
   $('intentApplyThreshold').disabled=!s||pending||stopping;

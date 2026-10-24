@@ -81,7 +81,8 @@ def _local_subnet_candidates():
 def _http_probe_lan(host, port, timeout=0.35):
     url = f'http://{host}:{port}/eeg/v1/lan/info'
     req = urllib.request.Request(url, method='GET')
-    with urllib.request.urlopen(req, timeout=timeout) as resp:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(req, timeout=timeout) as resp:
         data = json.loads(resp.read().decode('utf-8', errors='replace'))
         if isinstance(data, dict) and data.get('service') == 'eegmovement_hub_v1':
             return dict(host=host, port=int(data.get('port') or port), ws_path=data.get('ws_path') or LAN_WS_PATH)
@@ -97,6 +98,9 @@ def discover_lan_hub(host_hint='', default_port=DEFAULT_LAN_WS_PORT, timeout=0.6
                 return found
         except Exception:
             pass
+        # A failed explicit destination is an error at that destination, never
+        # authority to connect to a different discovered interface.
+        return None
     hosts, broadcasts = _local_subnet_candidates()
     if explicit_host and explicit_host not in hosts:
         hosts.insert(0, explicit_host)
@@ -141,7 +145,9 @@ def build_lan_enrollment(host_hint='', agent_id=None, default_port=DEFAULT_LAN_W
     if not HEX32.fullmatch(agent):
         agent = secrets.token_hex(16)
     explicit_host, port = parse_lan_target(host_hint, default_port)
-    found = discover_lan_hub(host_hint, port, timeout=0.5)
+    # A configured destination is authoritative. Discovery is only for an empty
+    # target, otherwise an unrelated responding VPN interface can replace it.
+    found = None if explicit_host else discover_lan_hub(host_hint, port, timeout=0.5)
     if found:
         host = found['host']
         port = found['port']
@@ -176,7 +182,7 @@ def probe_lan(enrollment, on_event=None):
         enrollment['url'] = f"ws://{found['host']}:{found['port']}{found.get('ws_path') or LAN_WS_PATH}"
     url = enrollment.get('url') or f"ws://{enrollment['host']}:{enrollment['port']}{LAN_WS_PATH}"
     callback('热点直连', 'INFO', f'正在连接中枢热点 WebSocket {url}')
-    ws = connect(url, open_timeout=2.5, close_timeout=1, max_size=8 * 1024 * 1024, compression=None)
+    ws = connect(url, proxy=None, open_timeout=2.5, close_timeout=1, max_size=8 * 1024 * 1024, compression=None)
     try:
         nonce = secrets.token_hex(8)
         ws.send(pack(dict(kind='probe', agent_id=enrollment['agent_id'], probe=nonce, sdk_state='diagnostic', disk_state='not_started')))
@@ -233,6 +239,9 @@ class LanStatusLink(StatusLink):
 
     def _resolve_url(self):
         hint = self.config.get('host_hint') or ''
+        host, port = parse_lan_target(hint, self.config.get('port', DEFAULT_LAN_WS_PORT))
+        if host:
+            return f'ws://{host}:{port}{LAN_WS_PATH}'
         found = discover_lan_hub(hint or f"{self.config.get('host', '192.168.137.1')}:{self.config.get('port', DEFAULT_LAN_WS_PORT)}", self.config.get('port', DEFAULT_LAN_WS_PORT), timeout=0.4)
         if found:
             self.config['host'] = found['host']
@@ -245,7 +254,7 @@ class LanStatusLink(StatusLink):
             ws = None
             try:
                 url = self._resolve_url()
-                ws = connect(url, open_timeout=2.0, close_timeout=1, max_size=8 * 1024 * 1024, compression=None)
+                ws = connect(url, proxy=None, open_timeout=2.0, close_timeout=1, max_size=8 * 1024 * 1024, compression=None)
                 with self.lock:
                     self.state.update(
                         connected=True,
@@ -318,6 +327,9 @@ class LanWsReplicator(Replicator):
 
     def _resolve_url(self):
         hint = self.enrollment.get('host_hint') or ''
+        host, port = parse_lan_target(hint, self.enrollment.get('port', DEFAULT_LAN_WS_PORT))
+        if host:
+            return f'ws://{host}:{port}{LAN_WS_PATH}'
         target = hint or f"{self.enrollment.get('host', '192.168.137.1')}:{self.enrollment.get('port', DEFAULT_LAN_WS_PORT)}"
         found = discover_lan_hub(target, self.enrollment.get('port', DEFAULT_LAN_WS_PORT), timeout=0.4)
         if found:
@@ -419,7 +431,7 @@ class LanWsReplicator(Replicator):
             errors = []
             try:
                 url = self._resolve_url()
-                ws = connect(url, open_timeout=2.5, close_timeout=1, max_size=8 * 1024 * 1024, compression=None)
+                ws = connect(url, proxy=None, open_timeout=2.5, close_timeout=1, max_size=8 * 1024 * 1024, compression=None)
                 self.socket = getattr(ws, 'socket', None)
                 if self.socket is not None:
                     self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)

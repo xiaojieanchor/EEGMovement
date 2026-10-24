@@ -1,5 +1,6 @@
 """Direct Hotspot / LAN WebSocket ingest & discovery for EEG acquisition client."""
 import datetime
+import collections
 import json
 import math
 import secrets
@@ -46,6 +47,8 @@ class LanHubServer:
         self.error = None
         self.discovery_error = None
         self.timing = {}
+        self.failures = collections.deque(maxlen=8)
+        self.block_stats = collections.Counter()
 
     def start(self):
         if self.requested_port is None or self.requested_port < 0:
@@ -101,7 +104,8 @@ class LanHubServer:
         with self.lock:
             return dict(requested_port=self.requested_port, port=self.port, listening=self.server is not None,
                         discovery_ready=self.udp_sock is not None, error=self.error,
-                        discovery_error=self.discovery_error, active_clients=self.active_clients, timing=dict(self.timing))
+                        discovery_error=self.discovery_error, active_clients=self.active_clients, timing=dict(self.timing),
+                        failures=list(self.failures),block_stats=dict(self.block_stats))
 
     def _serve_udp(self):
         while not self.stop_event.is_set() and self.udp_sock:
@@ -164,7 +168,10 @@ class LanHubServer:
                 raise ValueError('Stream descriptor changed')
             if service.selected_agent is None:
                 service.selected_agent = agent_id
-            service.status.update(enabled=True, connected=True, descriptor=d, state='waiting_samples', agent_id=agent_id, transport='lan_ws')
+            # Descriptor handshakes also come from historical recovery jobs.
+            # Only an accepted live block may replace the runtime descriptor.
+            if self.runtime.descriptor is None:
+                service.status.update(enabled=True, connected=True, state='waiting_samples', agent_id=agent_id, transport='lan_ws')
             return j
 
     def _record_client_status(self, agent_id, data):
@@ -188,6 +195,7 @@ class LanHubServer:
     def _handle_ws(self, ws):
         agent_id = None
         descriptor = None
+        kind = 'opening'
         with self.lock:
             self.active_clients += 1
         try:
@@ -232,8 +240,6 @@ class LanHubServer:
                     d = validate_descriptor(h.get('descriptor'))
                     j = self._ensure_journal(agent_id, d)
                     descriptor = d
-                    if agent_id == service.selected_agent:
-                        service.on_descriptor(d)
                     ticket, now = self._issue_ticket(agent_id)
                     ws.send(pack(dict(
                         kind='descriptor_ok',
@@ -260,7 +266,16 @@ class LanHubServer:
                     result = service.ingest_external(agent_id, d, b, body, source_mark, transport='lan_ws')
                     self.timing = dict(ingest_ms=round((time.monotonic()-ingest_start)*1000,2),
                                        client_age_ms=age, ticket_elapsed_ms=b.get('ticket_elapsed_ms'),
-                                       ticket_age_ms=round((now-issued)*1000,2) if issued is not None else None)
+                                       ticket_age_ms=round((now-issued)*1000,2) if issued is not None else None,
+                                       block_seq=b['seq'],mode=b['mode'],live_accepted=result.get('live_accepted'),
+                                       bound_age_ms=round((now-source_mark)*1000,2) if source_mark is not None else None)
+                    with self.lock:
+                        self.block_stats['blocks']+=1
+                        self.block_stats['live_accepted']+=bool(result.get('live_accepted'))
+                        self.block_stats['duplicate']+=bool(result.get('duplicate'))
+                        if b['mode']=='live' and not result.get('live_accepted'):
+                            self.block_stats['live_rejected']+=1
+                            self.block_stats['missing_or_invalid_ticket']+=source_mark is None
                     if result.get('live_accepted'):
                         with service.lock:
                             service.status['transport'] = 'lan_ws'
@@ -294,8 +309,9 @@ class LanHubServer:
                     break
                 else:
                     raise ValueError('Unsupported LAN WebSocket message: ' + str(kind))
-        except Exception:
-            pass
+        except Exception as error:
+            with self.lock:
+                self.failures.append(dict(time_ns=time.time_ns(),kind=kind,error=type(error).__name__+': '+str(error)[:240]))
         finally:
             with self.lock:
                 self.active_clients = max(0, self.active_clients - 1)

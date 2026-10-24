@@ -62,15 +62,29 @@ class HubIntegrationTests(unittest.TestCase):
     def test_gap_ends_active_hold_without_reusing_labels(self):
         d=validate_descriptor(descriptor('gtec_live'));self.feed(d)
         s=self.hub.acquisition.start(dict(build_id='test-build',paradigm='self_paced_motor_imagery',presentation_protocol='self_paced_axes_v2',task_guidance_version='gaze_navigation_v2',input_surface='desktop'))
+        self.hub.acquisition.event(dict(session_id=s['session_id'],client_token=s['client_token'],seq=1,label='FORWARD',phase='hold_start',sender_monotonic_ms=0,sender_frame=1,clock_offset_ms=0,sync_rtt_ms=1,xr_active=False,pointer_source='desktop_pointer',page_active=True))
+        epoch=self.hub.epoch;path=self.hub.recorder.journal.path
         self.feed(d,3,16)
-        self.assertFalse(self.hub.acquisition.snapshot()['active']);self.assertIsNone(self.hub.recorder)
+        state=self.hub.acquisition.snapshot()
+        self.assertTrue(state['active']);self.assertEqual(state['session_id'],s['session_id'])
+        self.assertIsNone(state['label']);self.assertTrue(state['resume_pending'])
+        self.assertGreater(self.hub.epoch,epoch);self.assertEqual(len(self.hub.raw),8)
+        self.hub.acquisition.stop(reason='operator_stop')
+        rows=[json.loads(line) for line in (path/'events.jsonl').read_text('utf-8').splitlines()]
+        pauses=[r for r in rows if r.get('code')=='capture_input_pause']
+        self.assertEqual(pauses[-1]['reason'],'sample_gap');self.assertIsNone(pauses[-1]['label'])
+        self.assertTrue((path/'closed.json').exists())
 
-    def test_new_device_hold_expires_at_declared_lease_and_closes(self):
+    def test_new_device_hold_expires_without_ending_requested_capture(self):
         d=validate_descriptor(descriptor('gtec_live'));self.feed(d);a=self.hub.acquisition
         s=a.start(dict(build_id='test',paradigm='self_paced_motor_imagery',presentation_protocol='self_paced_axes_v2',task_guidance_version='gaze_navigation_v2',input_surface='desktop'))
         a.event(dict(session_id=s['session_id'],client_token=s['client_token'],seq=1,label='FORWARD',phase='hold_start',sender_monotonic_ms=0,sender_frame=1,clock_offset_ms=0,sync_rtt_ms=1,xr_active=False,pointer_source='desktop_pointer',page_active=True))
-        a.last_seen-=.8;a.expire()
-        self.assertFalse(a.snapshot()['active']);self.assertIsNone(a.snapshot()['label']);self.assertIsNone(self.hub.recorder)
+        path=self.hub.recorder.journal.path;a.last_seen-=.8;a.expire()
+        self.assertTrue(a.snapshot()['active']);self.assertIsNone(a.snapshot()['label'])
+        self.assertTrue(a.snapshot()['input_paused']);self.assertEqual(a.snapshot()['phase'],'waiting_input')
+        self.assertEqual(a.snapshot()['session_id'],s['session_id'])
+        a.stop(reason='operator_stop');self.assertIsNone(self.hub.recorder)
+        self.assertTrue((path/'closed.json').exists())
 
     def test_tls_runtime_active_markers_storage_and_returned_status_in_one_chain(self):
         # Synthetic matrices under an injected descriptor exercise the software

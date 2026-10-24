@@ -1,4 +1,4 @@
-"""Start the local hub without a console window; never stores SSH credentials."""
+"""Start the local hub without a console window; SSH secrets use Windows vault."""
 import json,subprocess,sys,time,urllib.request,webbrowser
 from pathlib import Path
 
