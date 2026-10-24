@@ -180,7 +180,9 @@ class IngestService:
         live=source_mark is not None and 0<=now-source_mark<self.freshness_ms/1000 and h['mode']=='live'
         with self.lock:
             cursor=self.live_cursors.get(identity,(-1,-1))
-            accepted=bool(live and not result['duplicate'] and agent==self.selected_agent and h['seq']>cursor[0] and h['sample_start']>=cursor[1])
+            # A durable backfill may race the data lane. Disk deduplication must
+            # not consume the once-only opportunity to publish its fresh copy.
+            accepted=bool(live and agent==self.selected_agent and h['seq']>cursor[0] and h['sample_start']>=cursor[1])
             self.status['received_blocks']+=1;self.status['durable_blocks']+=not result['duplicate'];self.status['backfill_blocks']+=not live
             self.status['expired_blocks']+=h['mode']=='live' and not live
             if accepted:self.live_cursors[identity]=h['seq'],h['sample_start']+h['sample_count']

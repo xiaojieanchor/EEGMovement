@@ -27,6 +27,14 @@ class SDKError(RuntimeError):
         super().__init__(message)
 
 
+_BUFFER_OVERFLOW_EXPLANATIONS = {
+    16: ('原厂采集缓冲区溢出（错误16）：服务端未及时从设备取数，已发生数据缺口。'
+         '原厂会自动重置缓冲区；为保留连续性边界，当前数据流结束，请核查原厂服务端后手动重新开始接收。'),
+    17: ('原厂传输缓冲区溢出（错误17）：参与者未及时从服务端取数，已发生数据缺口。'
+         '原厂会自动重置缓冲区；为保留连续性边界，当前数据流结束，请核查取数与处理速度后手动重新开始接收。'),
+}
+
+
 READ_APIS = frozenset({
     'GDS_Initialize', 'GDS_Uninitialize', 'GDS_GetConnectedDevices',
     'GDS_FreeConnectedDevicesList', 'GDS_Connect', 'GDS_Disconnect',
@@ -197,7 +205,8 @@ class CffiDriver:
                  18: 'acquisition_died', 20: 'endpoint_unavailable', 22: 'request_timeout'}
         explanation = {5: '原厂会话为独占模式或不允许参与；不会接管设备。',
                        9: '设备组与原厂当前会话不一致。',
-                       13: '原厂尚未启动设备采集，或已经停止。'}
+                       13: '原厂尚未启动设备采集，或已经停止。',
+                       **_BUFFER_OVERFLOW_EXPLANATIONS}
         detail = self.ffi.string(result.ErrorMessage).decode('utf-8', 'replace')
         raise SDKError(names.get(code, f'gds_{code}'), explanation.get(code, '原厂SDK调用失败。') + ' ' + detail,
                        native_code=code)
@@ -498,7 +507,10 @@ class ParticipantReader:
                                    quality_semantics='device validity and continuity; electrode contact not measured',
                                    timing_semantics='host read timing; no hardware or VR clock timestamp')
             self.width = len(columns)
-            self.capacity = max(1, min(4096, math.ceil(rate / 20)))
+            # Drain up to one second of the actual configured rate so a delayed
+            # poll can catch up. GetData(scanCount=0) returns available scans up
+            # to this capacity; it does not wait for the buffer to fill.
+            self.capacity = max(1, min(4096, rate))
             self._assert_state()
             driver.start_streaming(self.handle)
             self.streaming = True
@@ -511,6 +523,9 @@ class ParticipantReader:
     def _assert_state(self):
         fault = self.driver.state()
         if fault:
+            if fault in ('acquisition_error_16', 'acquisition_error_17'):
+                code = int(fault.rsplit('_', 1)[1])
+                raise SDKError(fault, _BUFFER_OVERFLOW_EXPLANATIONS[code], native_code=code)
             raise SDKError(fault, '原厂会话状态已改变，当前数据流结束；请核查后重新开始接收。')
 
     def read(self):

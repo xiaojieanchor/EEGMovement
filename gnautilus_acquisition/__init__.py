@@ -1,2 +1,2 @@
 """Independent g.Nautilus participant transport. Importing never loads vendor code."""
-__version__ = '1.1.8'
+__version__ = '1.1.10'

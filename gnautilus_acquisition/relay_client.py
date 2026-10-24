@@ -45,8 +45,18 @@ class RelayReplicator(Replicator):
             self.endpoint=Endpoint(self.enrollment,self.message,on_state=self.connection_state,lanes=('control','data','backfill'),on_stage=lambda lane,stage,message:self.on_event('公网·'+lane,'INFO',stage+' · '+message))
     def _run_attempt(self):
         self.last_hub=0;self.endpoint.start();last_health=last_clock=0
+        lane_stop=threading.Event();lane_error=[]
+        def sender(function):
+            try:
+                while not lane_stop.wait(.005):
+                    if self.endpoint.snapshot()['connected']:function()
+            except Exception as error:lane_error.append(error);lane_stop.set()
+        senders=[threading.Thread(target=sender,args=(fn,),daemon=True,name='EEG '+name) for name,fn in
+                 [('live sender',self._send_next_live),('backfill sender',self._send_next_backfill)]]
+        for thread in senders:thread.start()
         try:
             while not self.stop_event.wait(.01):
+                if lane_error:raise lane_error[0]
                 now=time.monotonic();self.state['hub_online']=now-self.last_hub<1
                 if self.state.get('fatal_error'):break
                 if not self.endpoint.snapshot()['connected']:continue
@@ -55,24 +65,49 @@ class RelayReplicator(Replicator):
                     self.endpoint.send('eeg_status',encoded(health),self.enrollment['hub_id'],self.enrollment['secret']);last_health=now
                 if now-last_clock>=5:
                     self.endpoint.send('clock',encoded(dict(t0=now*1000)),self.enrollment['hub_id'],self.enrollment['secret']);last_clock=now
-                with self.journal.lock:numbers=sorted(self.journal.records);maximum=numbers[-1] if numbers else 0
-                with self.lock:
-                    self.inflight={n:t for n,t in self.inflight.items() if now-t<3}
-                    if len(self.inflight)>=64:continue
-                    missing=[n for n in numbers if n>self.state['durable_seq'] and n not in self.acked and n not in self.inflight and now-self.cloud.get(n,-1e9)>60]
-                if not missing:continue
-                seq=maximum if maximum in missing and maximum>self.last_live_seq and not self.backfill_only else missing[0]
-                header,raw=self.journal.read(seq);age=max(0,(time.monotonic_ns()-header['read_monotonic_ns'])/1e6)
-                live=seq==maximum and seq>self.last_live_seq and age<150 and bool(self.ticket) and not self.backfill_only
-                if live:self.last_live_seq=seq
-                header.update(mode='live' if live else 'backfill',ticket=self.ticket or '',source_age_ms=age)
-                data=pack(dict(descriptor=self.journal.descriptor,block=header),raw)
-                self.endpoint.send('eeg_block',data,self.enrollment['hub_id'],self.enrollment['secret'],lane='data' if live else 'backfill',stream=header['stream_id'],epoch=header['epoch'],block_seq=seq)
-                with self.lock:self.inflight[seq]=now;self.state['sent_blocks']+=1
         except Exception as error:
             if not self.stop_event.is_set():
                 self.state['error']=str(error)[:240];self.on_event('公网','WARN',str(error)[:240]+'；本地数据保留，稍后重连')
-        finally:self.endpoint.stop()
+        finally:
+            lane_stop.set();self.endpoint.stop()
+            for thread in senders:thread.join(6)
+            if any(t.is_alive() for t in senders):self.state.update(fatal_error='发送线程未结束，保留本地记录后停止',error='发送线程未结束');self.stop_event.set()
+    def _next_pending(self,live):
+        now=time.monotonic();stamp=time.monotonic_ns()
+        with self.journal.lock:
+            candidates=[(n,r['header']['read_monotonic_ns']) for n,r in self.journal.records.items()]
+        with self.lock:
+            self.inflight={n:t for n,t in self.inflight.items() if now-t<3}
+            # Reserve half of the bounded window for new live data.
+            if len(self.inflight)>=(64 if live else 32):return None
+            for n,read in sorted(candidates):
+                age=max(0,(stamp-read)/1e6);fresh=age<150 and not self.backfill_only
+                if n<=self.state['durable_seq'] or n in self.acked or n in self.inflight or now-self.cloud.get(n,-1e9)<=60:continue
+                if live:
+                    if not fresh or not self.ticket or n<=self.last_live_seq:continue
+                elif fresh:continue # Never steal a fresh block from the live lane.
+                self.inflight[n]=now
+                if live:self.last_live_seq=n
+                return n
+        return None
+    def _send_block(self,seq,live):
+        if seq is None:return False
+        try:
+            header,raw=self.journal.read(seq);age=max(0,(time.monotonic_ns()-header['read_monotonic_ns'])/1e6)
+            # Data that aged during local I/O must return later as history.
+            if live and age>=150:
+                with self.lock:self.inflight.pop(seq,None)
+                return False
+            header.update(mode='live' if live else 'backfill',ticket=self.ticket or '',source_age_ms=age)
+            self.endpoint.send('eeg_block',pack(dict(descriptor=self.journal.descriptor,block=header),raw),self.enrollment['hub_id'],self.enrollment['secret'],
+                lane='data' if live else 'backfill',stream=header['stream_id'],epoch=header['epoch'],block_seq=seq)
+            with self.lock:self.state['sent_blocks']+=1
+            return True
+        except Exception:
+            with self.lock:self.inflight.pop(seq,None)
+            raise
+    def _send_next_live(self):return self._send_block(self._next_pending(True),True)
+    def _send_next_backfill(self):return self._send_block(self._next_pending(False),False)
     def snapshot(self):
         result=super().snapshot();fresh=time.monotonic()-getattr(self,'last_hub',0)<1
         result.update(hub_online=fresh,hub_state_fresh=fresh)

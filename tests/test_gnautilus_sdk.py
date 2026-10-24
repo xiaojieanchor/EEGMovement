@@ -184,15 +184,87 @@ class SDKTests(unittest.TestCase):
         self.assertTrue(np.isnan(reader.read()).all())
         reader.close()
 
-    def test_callback_invalidation_stops_stream_instead_of_silent_reconfiguration(self):
+    def test_read_drains_a_burst_larger_than_one_poll_without_changing_samples(self):
+        reader, driver = self.reader()
+        driver.buffer = np.arange(1280, dtype=np.float32).reshape(128, 10)
+        reader.open()
+        try:
+            # 512 Hz permits a one-second drain, rather than only 26 scans.
+            self.assertEqual(reader.capacity, 512)
+            samples = reader.read()
+            np.testing.assert_array_equal(samples, driver.buffer)
+            driver.buffer[:] = -1
+            np.testing.assert_array_equal(samples, np.arange(1280, dtype=np.float32).reshape(128, 10))
+        finally:
+            reader.close()
+
+    def test_drain_capacity_uses_the_actual_rate_and_remains_bounded(self):
+        for rate, capacity in [(250, 250), (10000, 4096)]:
+            with self.subTest(rate=rate):
+                reader, driver = self.reader()
+                driver.config['SamplingRate'] = rate
+                driver.get_supported_sampling_rates = lambda *_: [rate]
+                driver.buffer = np.zeros((capacity, 10), dtype=np.float32)
+                desc = reader.open()
+                try:
+                    self.assertEqual(desc['sampling_rate'], rate)
+                    self.assertEqual(reader.capacity, capacity)
+                    self.assertEqual(reader.read().shape, (capacity, 10))
+                finally:
+                    reader.close()
+
+    def test_overflow_callbacks_report_a_gap_and_keep_vetoing_reads(self):
+        for code, origin in [(16, '采集缓冲区'), (17, '传输缓冲区')]:
+            with self.subTest(code=code):
+                reader, driver = self.reader()
+                reader.open()
+                driver.changed = f'acquisition_error_{code}'
+                try:
+                    for _ in range(2):
+                        with self.assertRaises(SDKError) as caught:
+                            reader.read()
+                        error = caught.exception
+                        self.assertEqual(error.code, f'acquisition_error_{code}')
+                        self.assertEqual(error.native_code, code)
+                        self.assertIn(origin, str(error))
+                        self.assertIn('溢出', str(error))
+                        self.assertIn('缺口', str(error))
+                        self.assertIn('手动', str(error))
+                        self.assertNotIn('会话状态已改变', str(error))
+                    self.assertNotIn('get_data', driver.calls)
+                    self.assertEqual(driver.calls.count('start_streaming'), 1)
+                finally:
+                    reader.close()
+
+    def test_overflow_callback_during_read_discards_the_discontinuous_block(self):
         reader, driver = self.reader()
         reader.open()
-        driver.changed = 'configuration_changed'
-        with self.assertRaises(SDKError) as ctx:
-            reader.read()
-        self.assertEqual(ctx.exception.code, 'configuration_changed')
-        self.assertNotIn('get_data', driver.calls)
-        reader.close()
+        def overflow_read(*_):
+            driver.changed = 'acquisition_error_17'
+            return driver.buffer
+        driver.get_data = overflow_read
+        try:
+            with self.assertRaises(SDKError) as caught:
+                reader.read()
+            self.assertEqual(caught.exception.code, 'acquisition_error_17')
+            self.assertIn('缺口', str(caught.exception))
+        finally:
+            reader.close()
+
+    def test_callback_invalidation_stops_stream_instead_of_silent_reconfiguration(self):
+        for fault in ['configuration_changed', 'acquisition_stopped', 'creator_disconnected',
+                      'creator_changed', 'server_disconnected', 'client_shutdown', 'acquisition_error_18']:
+            with self.subTest(fault=fault):
+                reader, driver = self.reader()
+                reader.open()
+                driver.changed = fault
+                try:
+                    with self.assertRaises(SDKError) as ctx:
+                        reader.read()
+                    self.assertEqual(ctx.exception.code, fault)
+                    self.assertNotIn('get_data', driver.calls)
+                finally:
+                    reader.close()
 
     def test_layout_requires_explicit_verification_and_physical_identity(self):
         reader, _ = self.reader(layout={'channels': {'0': 'Fp1', '2': 'C3'},
@@ -347,12 +419,18 @@ class NativeMarshallingTests(unittest.TestCase):
         outer = self
         class Native:
             def GDS_GetData(self, *args):
-                return outer.result(17)
+                return outer.result(outer.overflow_code)
         self.driver.dll = Native()
-        with self.assertRaises(SDKError) as ctx:
-            self.driver.get_data(7, 3, 10)
-        self.assertEqual(ctx.exception.code, 'transmission_buffer_overflow')
-        self.assertEqual(ctx.exception.native_code, 17)
+        for code, name, origin in [(16, 'acquisition_buffer_overflow', '采集缓冲区'),
+                                   (17, 'transmission_buffer_overflow', '传输缓冲区')]:
+            with self.subTest(code=code):
+                self.overflow_code = code
+                with self.assertRaises(SDKError) as ctx:
+                    self.driver.get_data(7, 3, 10)
+                self.assertEqual(ctx.exception.code, name)
+                self.assertEqual(ctx.exception.native_code, code)
+                self.assertIn(origin, str(ctx.exception))
+                self.assertIn('缺口', str(ctx.exception))
 
 
 class WorkerReader:
