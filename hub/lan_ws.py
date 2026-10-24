@@ -222,7 +222,9 @@ class LanHubServer:
                     age = b.get('source_age_ms')
                     source_mark = None
                     if b.get('mode') == 'live' and issued is not None and type(age) in (int, float) and math.isfinite(age) and age >= 0:
-                        source_mark = now - min(float(age), 220.0) / 1000.0
+                        # The ticket predates this read. Include its full travel
+                        # time and never clamp old samples into the live budget.
+                        source_mark = issued - float(age) / 1000.0
                     result = service.ingest_external(agent_id, d, b, body, source_mark)
                     if result.get('live_accepted'):
                         with service.lock:

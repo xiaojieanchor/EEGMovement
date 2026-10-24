@@ -184,7 +184,6 @@ class IngestService:
             if self.selected_agent is None:self.selected_agent=agent
         result=j.append(h,body);now=time.monotonic()
         live=source_mark is not None and 0<=now-source_mark<self.freshness_ms/1000 and h['mode']=='live'
-        bridged=[]
         with self.lock:
             cursor=self.live_cursors.get(identity,(-1,-1))
             # A durable backfill may race the data lane. Disk deduplication must
@@ -192,22 +191,9 @@ class IngestService:
             accepted=bool(live and agent==self.selected_agent and h['seq']>cursor[0] and h['sample_start']>=cursor[1])
             self.status['received_blocks']+=1;self.status['durable_blocks']+=not result['duplicate'];self.status['backfill_blocks']+=not live
             self.status['expired_blocks']+=h['mode']=='live' and not live
-            if accepted:
-                if cursor[0]>0 and 1<h['seq']-cursor[0]<=8:
-                    expected_start=cursor[1];candidates=[]
-                    with j.lock:
-                        for m_seq in range(cursor[0]+1,h['seq']):
-                            if m_seq not in j.records:candidates=[];break
-                            mh,mraw=j.read(m_seq)
-                            if mh['sample_start']!=expected_start:candidates=[];break
-                            expected_start+=mh['sample_count']
-                            candidates.append((mh,validate_block(mh,mraw,d)))
-                    if candidates and expected_start==h['sample_start']:bridged=candidates
-                self.live_cursors[identity]=h['seq'],h['sample_start']+h['sample_count']
+            if accepted:self.live_cursors[identity]=h['seq'],h['sample_start']+h['sample_count']
         if accepted:
             self.on_descriptor(d)
-            for mh,mx in bridged:
-                self.on_block(d,dict(mh,mode='live',hub_source_monotonic_ns=int(source_mark*1e9)),mx)
             self.on_block(d,dict(h,hub_source_monotonic_ns=int(source_mark*1e9)),x)
             with self.lock:
                 self.last_live=source_mark;self.status.update(enabled=True,connected=True,state='receiving',descriptor=d,last_seq=h['seq'],last_sample_end=h['sample_start']+h['sample_count'],agent_id=agent,transport='public_relay')
