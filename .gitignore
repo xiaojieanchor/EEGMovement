@@ -31,7 +31,6 @@ unity/**/Builds/
 *.sqlite*
 *.db
 *.log
-**/runtime/
 **/relay_private/
 **/relay_enrollments/
 **/*pairing*.json

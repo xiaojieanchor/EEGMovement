@@ -31,6 +31,16 @@ def main():
     extra=os.environ.get('EEGMOVEMENT_AUDIT_SECRET')
     if extra:values.add(extra.encode())
     paths=subprocess.check_output(['git','ls-files','-z'],cwd=ROOT).decode().split('\0');findings=[];total=0;size=0
+    tracked=set(filter(None,paths))
+    # Case-insensitive Windows ignores must not hide Unity's Runtime source folder.
+    code_suffixes={'.py','.cs','.js','.cjs','.css','.ps1','.java','.sh'}
+    trees=['gnautilus_acquisition','gnautilus_ml','gnautilus_lab','hub','eeg_relay','receiver','server','training','scripts','tests',
+           'unity/EEGMovement/Assets/Scripts','unity/EEGMovement/Assets/Editor','unity/EEGMovement/Assets/Plugins']
+    for tree in trees:
+        for p in (ROOT/tree).rglob('*'):
+            if not p.is_file() or p.suffix not in code_suffixes or any(v in p.parts for v in ['runtime','bin','__pycache__']):continue
+            name=p.relative_to(ROOT).as_posix()
+            if name not in tracked:findings.append(dict(path=name,reasons=['active_source_missing_from_git']))
     protected={'programfile_gtec','g-tec','mannul','outputs','runtime','relay_private','relay_enrollments','node_modules','Library','Validation~'}
     batch=subprocess.Popen(['git','cat-file','--batch'],cwd=ROOT,stdin=subprocess.PIPE,stdout=subprocess.PIPE)
     for name in filter(None,paths):
