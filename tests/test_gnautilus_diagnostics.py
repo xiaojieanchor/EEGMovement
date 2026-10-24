@@ -205,6 +205,19 @@ class CliTests(unittest.TestCase):
             self.assertFalse(result['hardware_verified'])
             self.assertFalse(result['stream_verified'])
 
+    def test_tls_smoke_creates_verified_private_ca_context_without_sdk_or_network(self):
+        import json
+        import subprocess
+        import sys
+        root=Path(__file__).resolve().parents[1]
+        with tempfile.TemporaryDirectory() as temp:
+            report=Path(temp)/'tls.json'
+            result=subprocess.run([sys.executable,'-m','gnautilus_acquisition','--tls-smoke-test','--report-path',str(report)],cwd=root,capture_output=True,timeout=10)
+            self.assertEqual(result.returncode,0,result.stderr)
+            data=json.loads(report.read_text('utf-8'))
+            self.assertTrue(data['check_hostname']);self.assertTrue(data['certificate_required'])
+            self.assertFalse(data['network_used']);self.assertFalse(data['vendor_loaded'])
+
     def test_probe_requires_diagnose_and_bounded_duration(self):
         import subprocess
         import sys

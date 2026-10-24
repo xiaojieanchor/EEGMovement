@@ -8,13 +8,20 @@ from eeg_relay.update import verify_manifest,file_hash,extract_version,activate,
 def bundle(name):return Path(getattr(sys,'_MEIPASS',Path(__file__).resolve().parent))/name
 def install_root():return Path(os.environ.get('EEGMOVEMENT_INSTALL_ROOT') or Path(os.environ.get('LOCALAPPDATA',str(Path.home())))/'EEGMovement/gNautilus-app')
 def config():return json.loads(bundle('relay_public.json').read_text('utf-8'))
-def launch(root,dir,health_path=None):
+def launch(root,dir,health_path=None,*,start_receiving=False,status_path=None):
     args=[str(root/dir/'EEGMovement-gNautilus.exe')]
     if health_path:args+=['--health-file',str(health_path)]
-    return subprocess.Popen(args,cwd=root/dir,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
-def health(root,candidate,expected_version=None):
+    if start_receiving:args+=['--start-receiving']
+    if status_path:args+=['--status-file',str(status_path)]
+    log=Path(health_path).with_suffix('.log') if health_path else root/'updates/application-startup.log'
+    log.parent.mkdir(parents=True,exist_ok=True)
+    with log.open('ab') as output:
+        return subprocess.Popen(args,cwd=root/dir,stdin=subprocess.DEVNULL,stdout=output,stderr=subprocess.STDOUT,
+                                close_fds=True,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
+
+def health(root,candidate,expected_version=None,*,start_receiving=False,status_path=None):
     report=root/'updates'/('health-'+uuid.uuid4().hex+'.json');report.parent.mkdir(parents=True,exist_ok=True)
-    process=launch(root,str(candidate.relative_to(root)),report)
+    process=launch(root,str(candidate.relative_to(root)),report,start_receiving=start_receiving,status_path=status_path)
     for _ in range(150):
         if report.exists():
             try:
@@ -23,7 +30,11 @@ def health(root,candidate,expected_version=None):
             except Exception:pass
         if process.poll() is not None:break
         time.sleep(.2)
-    if process.poll() is None:process.terminate();process.wait(timeout=10)
+    exit_code=process.poll()
+    if exit_code is None:process.terminate();process.wait(timeout=10)
+    reason='another_workbench_running' if exit_code==2 else 'startup_process_exited' if exit_code is not None else 'startup_timeout'
+    atomic(root/'updates/last-health-failure.json',dict(reason=reason,exit_code=exit_code,
+           expected_version=expected_version,candidate=str(candidate),report=str(report),log=str(report.with_suffix('.log')),time=time.time()))
     return False
 def close_installed_app(root):
     """Ask only this installed app to close and finish saving; never terminate it."""

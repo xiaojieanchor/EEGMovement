@@ -120,5 +120,40 @@ class QtTests(unittest.TestCase):
                 self.app.processEvents();self.w.refresh();time.sleep(.005)
         self.assertIn('状态未知',self.w.device_status.text())
 
+    def test_public_gui_entry_accepts_start_request_and_writes_runtime_status(self):
+        # Run the public QApplication entry in a separate process. Re-entering
+        # the suite's shared QApplication can let another fixture veto quit.
+        import subprocess,sys
+        root=Path(__file__).resolve().parents[1]
+        status=Path(self.tmp.name)/'entry-status.json';marker=Path(self.tmp.name)/'begin-requested'
+        code=f'''
+import os
+os.environ['QT_QPA_PLATFORM']='offscreen'
+from pathlib import Path
+from unittest.mock import patch
+from PySide6 import QtCore,QtWidgets
+from gnautilus_acquisition.gui import run_gui
+from gnautilus_acquisition.qt_gui import Workbench
+app=QtWidgets.QApplication([])
+status=Path({str(status)!r});marker=Path({str(marker)!r})
+def make_window():return Workbench(settings_path=status.with_name('settings.json'))
+def begin(window):marker.write_text('explicit request')
+with patch('gnautilus_acquisition.qt_gui.Workbench',side_effect=make_window),patch.object(Workbench,'begin',begin):
+    QtCore.QTimer.singleShot(2600,app.quit)
+    run_gui(start_receiving=True,status_path=status)
+assert marker.exists() and status.exists()
+'''
+        result=subprocess.run([sys.executable,'-c',code],cwd=root,capture_output=True,timeout=15)
+        self.assertEqual(result.returncode,0,result.stderr)
+        self.assertEqual(marker.read_text(),'explicit request')
+        self.assertEqual(json.loads(status.read_text('utf-8'))['schema'],'gnautilus.runtime.v1')
+
+    def test_runtime_snapshot_never_exports_configuration_or_transport_secrets(self):
+        self.c.snapshot=lambda:dict(state='receiving',samples=42,descriptor=dict(self.c.descriptor,configuration={'private':'DO-NOT-EXPORT'}),network=dict(connected=True,secret='DO-NOT-EXPORT',hub=dict(sample_index_end=42,secret='DO-NOT-EXPORT')))
+        result=self.w.runtime_snapshot()
+        self.assertEqual(result['client']['samples'],42)
+        self.assertEqual(result['hub']['sample_index_end'],42)
+        self.assertNotIn('DO-NOT-EXPORT',json.dumps(result))
+
 
 if __name__=='__main__':unittest.main()

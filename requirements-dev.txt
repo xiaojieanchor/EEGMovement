@@ -4,3 +4,4 @@ cffi>=2,<3
 websockets>=16,<17
 PySide6>=6.10,<7
 pywin32>=311; sys_platform == 'win32'
+psutil>=6,<8

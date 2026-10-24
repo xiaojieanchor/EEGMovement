@@ -4,8 +4,9 @@ from .network import Connection
 from .protocol import seal,verify
 
 class Endpoint:
-    def __init__(self,config,on_message,*,on_state=None,key_for=None,lanes=('control','data','backfill','preview')):
+    def __init__(self,config,on_message,*,on_state=None,key_for=None,lanes=('control','data','backfill','preview'),on_stage=None):
         self.config=config;self.on_message=on_message;self.on_state=on_state or (lambda s:None);self.key_for=key_for
+        self.on_stage=on_stage or (lambda *args:None)
         self.lanes=lanes;self.connections={};self.lock=threading.RLock();self.seq=0;self.boot=secrets.token_hex(16)
         self.stop_event=threading.Event();self.broken=threading.Event();self.state=dict(connected=False,error=None,generation=0);self.replays={};self.route_server=None
     def start(self):
@@ -16,7 +17,7 @@ class Endpoint:
             try:
                 for lane in self.lanes:
                     if self.stop_event.is_set():return
-                    c=Connection(self.config,lane=lane,boot=self.boot);c.connect()
+                    c=Connection(self.config,lane=lane,boot=self.boot,on_stage=lambda stage,message,lane=lane:self.on_stage(lane,stage,message));c.connect()
                     with self.lock:self.connections[lane]=c
                 servers={c.route_server for c in self.connections.values()}
                 if len(servers)!=1:raise ConnectionError('Lanes belong to different relay processes')

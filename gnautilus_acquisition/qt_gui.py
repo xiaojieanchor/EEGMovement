@@ -527,6 +527,18 @@ class Workbench(QtWidgets.QMainWindow):
                 target=(f"{pairing['host']}:{pairing['port']}" if pairing else None))
             Path(path).write_text(json.dumps(dict(schema='gnautilus.ui_log.v1',app_version=__version__,connection=context,events=self.events.snapshot()),ensure_ascii=False,indent=2),encoding='utf-8')
             self.events.add('校验','INFO','分项日志已导出：'+path)
+    def runtime_snapshot(self):
+        from .telemetry import build
+        state=self.controller.snapshot();network=state.get('network') or {}
+        if not self.controller.running and self.status_link:network=self.status_link.snapshot()
+        allowed=('connected','transport','hub_online','hub_state_fresh','hub_age_ms','durable_seq','cloud_blocks','backlog','live_accepted','live_submitted','error')
+        hub_fields=('source_fresh','sample_index_end','source_epoch','recording_active','recording_samples','events_saved','label','phase','vr_online','model_state','motion_state')
+        hub=network.get('hub') or {}
+        return dict(schema='gnautilus.runtime.v1',pid=os.getpid(),updated_utc_ns=time.time_ns(),
+                    client=build(self.profile(),state,network),
+                    network={k:network[k] for k in allowed if k in network},
+                    hub={k:hub[k] for k in hub_fields if k in hub})
+
     def closeEvent(self,event):
         self.closing=True;self.enrollment_stop.set()
         if self.controller.running or self.recovery:
@@ -540,11 +552,20 @@ class Workbench(QtWidgets.QMainWindow):
         self.timer.stop();self.preview_timer.stop();self.pairing_timer.stop();self.wave.timer.stop();event.accept()
 
 
-def run():
+def run(*,start_receiving=False,status_path=None):
     app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([]);app.setApplicationName('EEGMovement g.Nautilus');app.setFont(QtGui.QFont('Microsoft YaHei UI',10))
     window=Workbench();window.show()
     health=os.environ.pop('EEGMOVEMENT_STARTUP_HEALTH',None)
     if health:
         from .storage import atomic_json
         QtCore.QTimer.singleShot(1000,lambda:atomic_json(Path(health),dict(ready=True,pid=os.getpid(),version=__version__,vendor_started=False)))
+    if status_path:
+        from .storage import atomic_json
+        def write_runtime():
+            try:atomic_json(Path(status_path),window.runtime_snapshot())
+            except (OSError,ValueError) as error:
+                window.events.add('校验','WARN','运行诊断文件无法写入：'+str(error))
+                window.runtime_timer.stop()
+        window.runtime_timer=QtCore.QTimer(window);window.runtime_timer.timeout.connect(write_runtime);window.runtime_timer.start(1000)
+    if start_receiving:QtCore.QTimer.singleShot(2000,window.begin)
     return app.exec()

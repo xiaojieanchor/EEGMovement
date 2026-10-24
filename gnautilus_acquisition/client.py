@@ -13,7 +13,12 @@ from pathlib import Path
 from .contract import block_frame,validate_descriptor
 from .storage import StreamJournal
 from .display import PreviewBuffer,EventLog
+from .feedback import HubFeedbackLog
 from .contract import json_bytes,send_frame,recv_frame
+
+
+SDK_OPEN_TIMEOUT_SECONDS=15.
+SDK_SAMPLE_TIMEOUT_SECONDS=5.
 
 
 def connect_authenticated(enrollment,timeout=3,on_stage=None):
@@ -84,6 +89,7 @@ class Replicator:
         self.stop_event=threading.Event();self.lock=threading.RLock();self.socket=None
         self.state=dict(connected=False,durable_seq=0,backlog=0,error=None,sent_blocks=0,live_accepted=0)
         self.last_live_seq=0;self.acked=set()
+        self.feedback_log=HubFeedbackLog()
         self.health_provider=health_provider
         self.on_event=on_event or (lambda *args:None);self.last_hub_log=0;self.last_hub_phase=None;self.last_components={}
     def start(self):
@@ -148,6 +154,7 @@ class Replicator:
     def _feedback(self,reply):
         hub=reply.get('hub_state')
         if not isinstance(hub,dict):return
+        self.feedback_log.consume(hub,self.on_event)
         with self.lock:self.state['hub']=hub
         phase=(hub.get('recording_active'),hub.get('label'),hub.get('phase'),hub.get('vr_online'))
         now=time.monotonic()
@@ -223,14 +230,17 @@ class Collector:
             self.worker=self.worker_factory(self.settings).start()
             self.log.add('采集','INFO','SDK隔离进程已启动；等待原厂运行中的非独占共享会话')
             with self.lock:self.state.update(state='starting',sdk_state='opening_shared_session')
-            last=time.monotonic()
+            last=time.monotonic();have_descriptor=False
             while not self.stop_event.is_set():
                 m=self.worker.receive(.1)
                 if m:
                     self._message(m)
+                    if m.get('kind')=='descriptor':have_descriptor=True
                     if m.get('kind') in ['block','descriptor']:last=time.monotonic()
                 elif not self.worker.alive:raise RuntimeError('SDK工作进程已退出')
-                if time.monotonic()-last>5:raise TimeoutError('SDK超过5秒没有样本，已停止自身接收')
+                timeout=SDK_SAMPLE_TIMEOUT_SECONDS if have_descriptor else SDK_OPEN_TIMEOUT_SECONDS
+                if time.monotonic()-last>timeout:
+                    raise TimeoutError(f'SDK超过{timeout:g}秒没有样本，已停止自身接收' if have_descriptor else f'SDK在{timeout:g}秒内未完成原厂共享会话初始化，已停止自身接收')
                 if self.writer_error:raise self.writer_error
                 if self.network and self.network.snapshot().get('fatal_error'):raise RuntimeError(self.network.snapshot()['fatal_error'])
         except BaseException as e:

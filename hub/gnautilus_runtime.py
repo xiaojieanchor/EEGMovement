@@ -23,6 +23,9 @@ class SessionRecorder:
             if not line.strip():continue
             event=json.loads(line);event.setdefault('stream_id',self.journal.descriptor['stream_id']);event.setdefault('source_epoch',self.hub.epoch)
             event.setdefault('sample_index_end',self.hub.sample_index);self.journal.event(event)
+            runtime=getattr(self.hub,'gnautilus_runtime',None)
+            if runtime and event.get('code') in ('manual_hold_start','manual_hold_end','manual_session_stop','guided_session_stop'):
+                runtime.log_feedback('标签',f"已保存 {event['code']} · {event.get('label') or 'UNKNOWN'} · 样本位置 {event['sample_index_end']}")
         return len(text)
     def append_block(self,h,x):
         self.seq+=1;header=dict(h,source_seq=h['seq'],source_sample_start=h['sample_start'],source_epoch=self.hub.epoch,
@@ -36,6 +39,7 @@ class GnautilusRuntime:
     def __init__(self,hub,root,*,port=8767):
         self.hub,self.root=hub,root;self.descriptor=None;self.last_seq=None;self.last_counter=None;self.received_blocks=0;self.last_close=None
         self.service=IngestService(root,self.accept,on_descriptor=self.describe,on_state=self.connection_state,get_hub_state=self.feedback,port=port)
+        self.feedback_boot_id=secrets.token_hex(8);self.feedback_logs=collections.deque(maxlen=20);self.feedback_log_seq=0
         self.paused=False;self.error=None;self.stop_event=threading.Event()
     def start(self):
         self.service.start();self.thread=threading.Thread(target=self._tick,daemon=True,name='g.Nautilus lifecycle');self.thread.start()
@@ -46,6 +50,11 @@ class GnautilusRuntime:
         known=bool(telemetry and isinstance(age,(int,float)) and 0<=age<1000)
         return dict(state=telemetry.get('state','UNKNOWN') if known else 'UNKNOWN',mode=telemetry.get('mode','UNKNOWN') if known else 'UNKNOWN',actual_speed=telemetry.get('actual_speed') if known else None,
                     actual_yaw_rate=telemetry.get('actual_yaw_rate') if known else None,known=known)
+    def log_feedback(self,stage,message,level='INFO'):
+        with self.hub.lock:
+            self.feedback_log_seq+=1
+            self.feedback_logs.append(dict(id=self.feedback_log_seq,time_ns=time.time_ns(),stage=stage,level=level,message=str(message)[:240]))
+
     def feedback(self):
         with self.hub.lock:
             acq=self.hub.acquisition.snapshot() if hasattr(self.hub,'acquisition') else {}
@@ -54,7 +63,8 @@ class GnautilusRuntime:
                 recording_samples=self.hub.recording_samples,label=acq.get('label') if acq.get('active') else None,phase=acq.get('phase','idle'),
                 events_saved=acq.get('events_saved',0),source_epoch=self.hub.epoch,sample_index_end=self.hub.sample_index,
                 vr_online=sum(bool(p.get('online')) for p in peers),model_state=self.hub.intent.snapshot().get('inference_state','stopped') if hasattr(self.hub,'ml') else 'not_configured',motion_state=self.execution()['state'],
-                contact_quality_known=False,source_fresh=self.fresh(),hub_utc_ns=time.time_ns())
+                contact_quality_known=False,source_fresh=self.fresh(),hub_utc_ns=time.time_ns(),
+                log_boot_id=self.feedback_boot_id,logs=list(self.feedback_logs))
     def _tick(self):
         while not self.stop_event.wait(.1):
             try:
@@ -73,6 +83,8 @@ class GnautilusRuntime:
                 self.last_seq=self.last_counter=None;self.hub.epoch+=1;self.hub.sample_index=0;self.hub.last_packet=None
                 size=max(1,int(d['sampling_rate']*5))
                 self.hub.raw=collections.deque(maxlen=size);self.hub.filtered=collections.deque(maxlen=size);self.hub.notched=collections.deque(maxlen=size)
+            if old is None or old['stream_id']!=d['stream_id']:
+                self.log_feedback('接收',f"已接收新数据流 · {d['source_kind']} · {sum(c['kind']=='EEG' for c in d['channels'])}路EEG · 配置{d['sampling_rate']}Hz")
             self.descriptor=d
     def accept(self,descriptor,header,x):
         if self.paused or header.get('mode')!='live':return
@@ -130,6 +142,7 @@ class GnautilusRuntime:
             name=datetime.datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+secrets.token_hex(4)
             path=self.root/'data/gnautilus'/datetime.date.today().isoformat()/'sessions'/name
             h.recorder=SessionRecorder(path,self.descriptor,h);h.recording_name=name;h.recording_samples=0
+        self.log_feedback('记录','已创建原始记录，数据与标签分开持久化')
         h.event('开始g.Nautilus原始记录：'+name,'info')
     def stop_recording(self):
         h=self.hub
@@ -140,6 +153,7 @@ class GnautilusRuntime:
                     self.last_close=recorder.close()
                     from gnautilus_acquisition.catalog import build_catalog
                     build_catalog(self.root/'data/gnautilus')
+                    self.log_feedback('记录',f'记录已关闭并生成校验清单 · {h.recording_samples}行')
                     h.event('g.Nautilus记录已关闭并生成校验清单','good')
                 except OSError as error:
                     self.error='记录关闭失败，保留已提交文件等待恢复：'+str(error);h.event(self.error,'error')

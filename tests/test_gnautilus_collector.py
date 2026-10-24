@@ -80,6 +80,28 @@ class CollectorTests(unittest.TestCase):
             checkpoints=[json.loads(line) for line in (Path(result['path'])/'events.jsonl').read_text('utf-8').splitlines()]
             self.assertTrue(any(row.get('state')=='error' and 'disk full' in row.get('error','') for row in checkpoints))
 
+    def test_slow_metadata_open_has_its_own_timeout_without_relaxing_sample_watchdog(self):
+        for steps, expected in [([(6,None),(7,dict(kind='descriptor',descriptor={})),(7.1,'stop')],'stopped'),
+                                ([(16,None)],'error'),
+                                ([(0,dict(kind='descriptor',descriptor={})),(6,None)],'error')]:
+            clock=[0.]
+            class TimedWorker:
+                def __init__(self,settings):self.steps=list(steps);self.alive=True;self.forced_termination=False
+                def start(self):return self
+                def receive(self,timeout):
+                    current,message=self.steps.pop(0);clock[0]=current
+                    if message=='stop':collector.stop_event.set();return None
+                    return message
+                def stop(self,on_message=None):self.alive=False
+            with tempfile.TemporaryDirectory() as temp:
+                collector=Collector({}, {},temp,worker_factory=TimedWorker)
+                with patch('gnautilus_acquisition.client.time.monotonic',side_effect=lambda:clock[0]),patch.object(collector,'_message'):
+                    collector._run()
+                self.assertEqual(collector.snapshot()['state'],expected)
+                if expected=='error':
+                    self.assertIn('15秒内未完成' if steps[0][0]==16 else '5秒没有样本',collector.snapshot()['error'])
+                self.assertFalse(collector.worker.alive)
+
     def test_sdk_release_failure_is_not_reported_as_clean_shutdown(self):
         with tempfile.TemporaryDirectory() as t:
             root=Path(t);e=provision(root,'127.0.0.1',port=1);c=Collector({},e,root/'local',worker_factory=CloseErrorWorker).start()

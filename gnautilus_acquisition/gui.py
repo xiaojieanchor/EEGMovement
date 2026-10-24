@@ -77,6 +77,6 @@ class AcquisitionController:
     def snapshot(self):return self.collector.snapshot() if self.collector else dict(state='idle',error=None,samples=0,blocks=0,network={},descriptor=None)
 
 
-def run_gui():
+def run_gui(*,start_receiving=False,status_path=None):
     from .qt_gui import run
-    return run()
+    return run(start_receiving=start_receiving,status_path=status_path)

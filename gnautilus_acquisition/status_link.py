@@ -2,13 +2,15 @@
 import copy,json,secrets,threading,time
 from eeg_relay.endpoint import Endpoint
 from eeg_relay.protocol import encoded
+from .feedback import HubFeedbackLog
 
 
 class StatusLink:
     def __init__(self,enrollment,on_event=None):
         self.config=dict(enrollment);self.lock=threading.RLock();self.stop_event=threading.Event()
         self.on_event=on_event or (lambda *a:None);self.last_hub=0;self.hub={};self.health={}
-        self.pending={};self.thread=None;self.endpoint=Endpoint(self.config,self.message,on_state=self.connection_state,lanes=('control',))
+        self.feedback_log=HubFeedbackLog()
+        self.pending={};self.thread=None;self.endpoint=Endpoint(self.config,self.message,on_state=self.connection_state,lanes=('control',),on_stage=lambda lane,stage,message:self.on_event('中枢·连接','INFO',stage+' · '+message))
         self.state=dict(connected=False,transport='public_relay',status_only=True,error=None)
     def start(self):
         with self.lock:
@@ -41,6 +43,7 @@ class StatusLink:
         if header['kind']!='hub_status':return
         data=json.loads(body)
         if not isinstance(data.get('hub_state'),dict):raise ValueError('Invalid hub state')
+        self.feedback_log.consume(data['hub_state'],self.on_event)
         with self.lock:
             self.hub=data['hub_state'];self.last_hub=time.monotonic();self.state['error']=None
             item=self.pending.get(data.get('probe'))

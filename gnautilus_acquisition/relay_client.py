@@ -7,7 +7,7 @@ from .client import Replicator
 class RelayReplicator(Replicator):
     def __init__(self,*args,**kwargs):
         super().__init__(*args,**kwargs);self.cloud={};self.inflight={};self.ticket=None;self.cloud_bytes=0
-        self.endpoint=Endpoint(self.enrollment,self.message,on_state=self.connection_state,lanes=('control','data','backfill'))
+        self.endpoint=Endpoint(self.enrollment,self.message,on_state=self.connection_state,lanes=('control','data','backfill'),on_stage=lambda lane,stage,message:self.on_event('公网·'+lane,'INFO',stage+' · '+message))
         self.state.update(transport='public_relay',cloud_blocks=0,hub_online=False,proxy_mode=self.enrollment.get('proxy_mode','auto'))
     def connection_state(self,state):
         with self.lock:
@@ -42,7 +42,7 @@ class RelayReplicator(Replicator):
         while not self.stop_event.is_set():
             self._run_attempt()
             if self.stop_event.wait(1):break
-            self.endpoint=Endpoint(self.enrollment,self.message,on_state=self.connection_state,lanes=('control','data','backfill'))
+            self.endpoint=Endpoint(self.enrollment,self.message,on_state=self.connection_state,lanes=('control','data','backfill'),on_stage=lambda lane,stage,message:self.on_event('公网·'+lane,'INFO',stage+' · '+message))
     def _run_attempt(self):
         self.last_hub=0;self.endpoint.start();last_health=last_clock=0
         try:

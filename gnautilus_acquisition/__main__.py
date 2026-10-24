@@ -15,11 +15,15 @@ def main():
     parser.add_argument('--serial',help='Select an exact g.Nautilus serial')
     parser.add_argument('--probe-stream',action='store_true',help='With --diagnose: briefly read an existing participant stream; no recording or forwarding')
     parser.add_argument('--probe-seconds',type=float,default=2.,help='Stream check duration, 0.1 to 10 seconds')
+    parser.add_argument('--tls-smoke-test',action='store_true',help='Create the private-CA TLS context without SDK or network access')
     parser.add_argument('--ui-smoke-test',action='store_true',help='Render idle UI offscreen without SDK/network access')
     parser.add_argument('--audit',help='Read-only audit of a saved stream directory');parser.add_argument('--compare',help='Compare the same stream copied from the hub')
     parser.add_argument('--report-path',help='Write diagnosis/smoke result as UTF-8 JSON')
-    parser.add_argument('--health-file',help='Installer startup receipt; no device is started')
+    parser.add_argument('--health-file',help='Installer startup receipt; device stays idle unless --start-receiving is explicit')
+    parser.add_argument('--start-receiving',action='store_true',help='Explicitly begin participant reception after the GUI opens; never starts vendor acquisition or models')
+    parser.add_argument('--status-file',help='Write bounded local GUI/runtime diagnostics without raw EEG or credentials')
     args=parser.parse_args()
+    if args.start_receiving and any([args.diagnose,args.smoke_test,args.ui_smoke_test,args.audit,args.version,args.tls_smoke_test]):parser.error('--start-receiving is only valid for the normal GUI')
     if args.probe_stream and not args.diagnose:parser.error('--probe-stream requires --diagnose')
     if not .1<=args.probe_seconds<=10:parser.error('--probe-seconds must be between 0.1 and 10')
     if args.compare and not args.audit:parser.error('--compare requires --audit')
@@ -44,6 +48,14 @@ def main():
             if dest:capture.save(str(dest))
             emit(dict(version=__version__,qt=QtCore.qVersion(),idle_rendered=not capture.isNull(),width=capture.width(),height=capture.height(),vendor_loaded=False,network_used=False))
             window.close()
+        return
+    if args.tls_smoke_test:
+        import ssl
+        from eeg_relay.trust import client_context
+        from .updater import public_config
+        context=client_context(public_config()['ca_pem'])
+        emit(dict(version=__version__,tls_context_created=True,check_hostname=context.check_hostname,
+                  certificate_required=context.verify_mode==ssl.CERT_REQUIRED,vendor_loaded=False,network_used=False))
         return
     if args.smoke_test:
         from .contract import validate_descriptor
@@ -73,7 +85,7 @@ def main():
     if args.health_file:
         import os
         os.environ['EEGMOVEMENT_STARTUP_HEALTH']=str(Path(args.health_file).resolve())
-    run_gui()
+    run_gui(start_receiving=args.start_receiving,status_path=args.status_file)
 
 
 if __name__=='__main__':main()
