@@ -6,13 +6,28 @@ from .client import Replicator
 
 class RelayReplicator(Replicator):
     def __init__(self,*args,**kwargs):
-        super().__init__(*args,**kwargs);self.cloud={};self.inflight={};self.ticket=None;self.cloud_bytes=0;self.live_scan_seq=0;self.backfill_scan_seq=0
+        super().__init__(*args,**kwargs);self.cloud={};self.inflight={};self.ticket=None;self.cloud_bytes=0;self.live_scan_seq=0;self.backfill_scan_seq=0;self.clock_replies=0
         self.endpoint=Endpoint(self.enrollment,self.message,on_state=self.connection_state,lanes=('control','data','backfill'),on_stage=lambda lane,stage,message:self.on_event('公网·'+lane,'INFO',stage+' · '+message))
         self.state.update(transport='public_relay',cloud_blocks=0,hub_online=False,proxy_mode=self.enrollment.get('proxy_mode','auto'))
     def connection_state(self,state):
         with self.lock:
-            self.state.update(connected=state['connected'],error=state.get('error'),path=state.get('path'));self.ticket=None;self.inflight.clear();self.cloud.clear()
+            self.state.update(connected=state['connected'],error=state.get('error'),path=state.get('path'));self.ticket=None;self.inflight.clear();self.cloud.clear();self.clock_replies=0
         self.on_event('公网','INFO' if state['connected'] else 'WARN','已通过TLS与设备认证；等待本机中枢' if state['connected'] else '公网连接中断，本地原始日志保留：'+str(state.get('error') or '重连中'))
+    def send_capture_event(self,payload):
+        queued=super().send_capture_event(payload)
+        self._flush_capture_events()
+        return queued
+    def _flush_capture_events(self):
+        if not self.endpoint.snapshot().get('connected'):return
+        while not self.capture_events.empty():
+            try:ev=self.capture_events.get_nowait()
+            except Exception:break
+            try:
+                self.endpoint.send('eeg_status',encoded(dict(sdk_state='receiving',disk_state='durable',capture_event=ev)),self.enrollment['hub_id'],self.enrollment['secret'],lane='control')
+            except Exception:
+                try:self.capture_events.put_nowait(ev)
+                except Exception:pass
+                break
     def message(self,lane,h,body):
         if h.get('notice'):
             if h['notice']=='update_available':self.state['update_revision']=h.get('revision')
@@ -37,6 +52,7 @@ class RelayReplicator(Replicator):
                     self.acked={n for n in self.acked if n>self.state['durable_seq']}
             self.last_hub=time.monotonic();self.state['hub_online']=True;self._feedback(data)
         elif h['kind']=='clock_reply':
+            self.clock_replies=getattr(self,'clock_replies',0)+1
             data.update(t3=time.monotonic()*1000,phase='report');self.endpoint.send('clock',encoded(data),self.enrollment['hub_id'],self.enrollment['secret'])
     def _run(self):
         while not self.stop_event.is_set():
@@ -46,13 +62,20 @@ class RelayReplicator(Replicator):
     def _run_attempt(self):
         self.last_hub=0;self.endpoint.start();last_health=last_clock=0
         lane_stop=threading.Event();lane_error=[]
-        def sender(function):
+        def sender(function,is_live):
             try:
-                while not lane_stop.wait(.005):
-                    if self.endpoint.snapshot()['connected']:function()
+                while not lane_stop.is_set():
+                    if is_live and hasattr(self.journal,'new_data'):
+                        self.journal.new_data.wait(.003)
+                        self.journal.new_data.clear()
+                    elif lane_stop.wait(.005):
+                        break
+                    if lane_stop.is_set():break
+                    if self.endpoint.snapshot()['connected']:
+                        while not lane_stop.is_set() and function():pass
             except Exception as error:lane_error.append(error);lane_stop.set()
-        senders=[threading.Thread(target=sender,args=(fn,),daemon=True,name='EEG '+name) for name,fn in
-                 [('live sender',self._send_next_live),('backfill sender',self._send_next_backfill)]]
+        senders=[threading.Thread(target=sender,args=(fn,is_live),daemon=True,name='EEG '+name) for name,fn,is_live in
+                 [('live sender',self._send_next_live,True),('backfill sender',self._send_next_backfill,False)]]
         for thread in senders:thread.start()
         try:
             while not self.stop_event.wait(.01):
@@ -60,16 +83,20 @@ class RelayReplicator(Replicator):
                 now=time.monotonic();self.state['hub_online']=now-self.last_hub<1
                 if self.state.get('fatal_error'):break
                 if not self.endpoint.snapshot()['connected']:continue
+                self._flush_capture_events()
                 if now-last_health>=.5:
                     health=self.health_provider() if self.health_provider else dict(sdk_state='backfill' if self.backfill_only else 'receiving',disk_state='durable')
                     self.endpoint.send('eeg_status',encoded(health),self.enrollment['hub_id'],self.enrollment['secret']);last_health=now
-                if now-last_clock>=5:
+                clock_interval=.2 if getattr(self,'clock_replies',0)<5 else 1.5
+                if now-last_clock>=clock_interval:
                     self.endpoint.send('clock',encoded(dict(t0=now*1000)),self.enrollment['hub_id'],self.enrollment['secret']);last_clock=now
         except Exception as error:
             if not self.stop_event.is_set():
                 self.state['error']=str(error)[:240];self.on_event('公网','WARN',str(error)[:240]+'；本地数据保留，稍后重连')
         finally:
-            lane_stop.set();self.endpoint.stop()
+            lane_stop.set()
+            if hasattr(self.journal,'new_data'):self.journal.new_data.set()
+            self.endpoint.stop()
             for thread in senders:thread.join(6)
             if any(t.is_alive() for t in senders):self.state.update(fatal_error='发送线程未结束，保留本地记录后停止',error='发送线程未结束');self.stop_event.set()
     def _next_pending(self,live):
@@ -77,19 +104,23 @@ class RelayReplicator(Replicator):
         with self.lock:
             if live and (self.backfill_only or not self.ticket):return None
             self.inflight={n:t for n,t in self.inflight.items() if now-t<3}
-            if len(self.inflight)>=(64 if live else 32):return None
+            if len(self.inflight)>=(64 if live else 16):return None
             cursor=max(self.state['durable_seq'],self.live_scan_seq if live else self.backfill_scan_seq)
             with self.journal.lock:
                 numbers=self.journal.sequences;at=bisect.bisect_right(numbers,cursor)
                 if not live and at==len(numbers):
                     at=bisect.bisect_right(numbers,self.state['durable_seq'])
                 # Work per poll stays bounded even after hours of recording.
-                candidates=[(n,self.journal.records[n]['header']['read_monotonic_ns']) for n in numbers[at:at+64]]
+                candidates=[]
+                for n in numbers[at:at+64]:
+                    hdr=self.journal.records[n]['header']
+                    candidates.append((n,hdr.get('read_completed_monotonic_ns',hdr['read_monotonic_ns'])))
             for n,read in candidates:
                 if live:self.live_scan_seq=n
                 else:self.backfill_scan_seq=n
                 age=max(0,(stamp-read)/1e6);fresh=age<150 and not self.backfill_only
-                if n<=self.state['durable_seq'] or n in self.acked or n in self.inflight or now-self.cloud.get(n,-1e9)<=60:continue
+                cloud_cooldown=2.0 if not live and n==self.state['durable_seq']+1 else (5.0 if not live else 60.0)
+                if n<=self.state['durable_seq'] or n in self.acked or n in self.inflight or now-self.cloud.get(n,-1e9)<=cloud_cooldown:continue
                 if live:
                     if not fresh or not self.ticket or n<=self.last_live_seq:continue
                 elif fresh:continue
@@ -100,7 +131,9 @@ class RelayReplicator(Replicator):
     def _send_block(self,seq,live):
         if seq is None:return False
         try:
-            header,raw=self.journal.read(seq);age=max(0,(time.monotonic_ns()-header['read_monotonic_ns'])/1e6)
+            header,raw=self.journal.read(seq)
+            read_ns=header.get('read_completed_monotonic_ns',header['read_monotonic_ns'])
+            age=max(0,(time.monotonic_ns()-read_ns)/1e6)
             # Data that aged during local I/O must return later as history.
             if live and age>=150:
                 with self.lock:self.inflight.pop(seq,None)

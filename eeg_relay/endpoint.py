@@ -15,18 +15,20 @@ class Endpoint:
         while not self.stop_event.is_set():
             self.boot=secrets.token_hex(16);self.broken.clear()
             try:
-                for lane in self.lanes:
+                ordered=[l for l in self.lanes if l!='control']+(['control'] if 'control' in self.lanes else [])
+                expected_server=None
+                for lane in ordered:
                     if self.stop_event.is_set():return
                     c=Connection(self.config,lane=lane,boot=self.boot,on_stage=lambda stage,message,lane=lane:self.on_stage(lane,stage,message));c.connect()
-                    with self.lock:self.connections[lane]=c
-                servers={c.route_server for c in self.connections.values()}
-                if len(servers)!=1:raise ConnectionError('Lanes belong to different relay processes')
-                with self.lock:
-                    server=servers.pop()
-                    if self.route_server!=server:self.replays.clear();self.route_server=server
-                self.state.update(connected=True,error=None,path=self.connections['control'].path,generation=self.state['generation']+1);self.on_state(dict(self.state))
-                readers=[threading.Thread(target=self.read,args=(lane,c),daemon=True) for lane,c in list(self.connections.items())]
-                for reader in readers:reader.start()
+                    if expected_server is None:expected_server=c.route_server
+                    elif c.route_server!=expected_server:
+                        c.close();raise ConnectionError('Lanes belong to different relay processes')
+                    with self.lock:
+                        if self.route_server!=expected_server:self.replays.clear();self.route_server=expected_server
+                        self.connections[lane]=c
+                    threading.Thread(target=self.read,args=(lane,c),daemon=True).start()
+                path_lane='control' if 'control' in self.connections else ordered[0]
+                self.state.update(connected=True,error=None,path=self.connections[path_lane].path,generation=self.state['generation']+1);self.on_state(dict(self.state))
                 while not self.stop_event.wait(.1) and not self.broken.is_set():pass
             except Exception as error:self.state['error']=type(error).__name__+': '+str(error)[:240]
             finally:
@@ -63,9 +65,23 @@ class Endpoint:
     def send(self,kind,body,target,secret,*,lane='control',stream='',epoch=0,block_seq=0):
         with self.lock:
             if not self.state['connected'] or lane not in self.connections:raise ConnectionError('公网连接尚未认证')
-            self.seq+=1;h=seal(self.config['workspace'],self.config['device_id'],target,self.boot,self.seq,kind,body,secret,stream=stream,epoch=epoch,block_seq=block_seq)
             connection=self.connections[lane]
-        connection.send(h,body);return h['seq']
+        lock=getattr(connection,'lock',None)
+        if lock is None:
+            with self.lock:
+                self.seq+=1;h=seal(self.config['workspace'],self.config['device_id'],target,self.boot,self.seq,kind,body,secret,stream=stream,epoch=epoch,block_seq=block_seq)
+            connection.send(h,body);return h['seq']
+        if not lock.acquire(timeout=5):raise TimeoutError('Lane send queue deadline')
+        try:
+            with self.lock:
+                if not self.state['connected'] or self.connections.get(lane) is not connection:raise ConnectionError('公网连接尚未认证')
+                self.seq+=1;h=seal(self.config['workspace'],self.config['device_id'],target,self.boot,self.seq,kind,body,secret,stream=stream,epoch=epoch,block_seq=block_seq)
+            connection.sending=True;connection.last_send=time.monotonic()
+            try:connection.ws.send(__import__('eeg_relay.protocol',fromlist=['pack']).pack(h,body))
+            finally:connection.sending=False
+            return h['seq']
+        finally:
+            lock.release()
     def snapshot(self):return dict(self.state)
     def stop(self):
         self.stop_event.set();self.broken.set()

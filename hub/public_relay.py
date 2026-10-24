@@ -55,7 +55,7 @@ class HubRelay:
         peer=self.peers[identity];body=value if raw else encoded(value)
         return self.endpoint.send(kind,body,identity,peer['secret'],**fields)
     def tick(self):
-        while not self.stop_event.wait(.08):
+        while not self.stop_event.wait(.04):
             if not self.endpoint.snapshot()['connected']:continue
             for identity,peer in self.peers.items():
                 if peer['role']!='eeg':continue
@@ -100,7 +100,10 @@ class HubRelay:
                     read_end=b.get('read_completed_monotonic_ns',b['read_monotonic_ns'])/1e6+mapping['offset_ms']
                     read_span=max(0,(b.get('read_completed_monotonic_ns',b['read_monotonic_ns'])-b['read_monotonic_ns'])/1e6)
                     self.anchors.append(dict(stream=d['stream_id'],epoch=self.hub.epoch,start=b['sample_start'],end=b['sample_start']+b['sample_count'],rate=d['sampling_rate'],read_end_ms=read_end,uncertainty_ms=mapping['uncertainty_ms']+read_span+1000/d['sampling_rate']))
-            self.send(identity,'hub_ack',dict(result,ack_seq=b['seq'],hub_state=self.hub.gnautilus_runtime.feedback()),stream=d['stream_id'],epoch=d['epoch'],block_seq=b['seq'])
+            ack_payload=dict(result,ack_seq=b['seq'])
+            if h.get('delivery')=='live' or b['seq']%16==0:
+                ack_payload['hub_state']=self.hub.gnautilus_runtime.feedback()
+            self.send(identity,'hub_ack',ack_payload,stream=d['stream_id'],epoch=d['epoch'],block_seq=b['seq'])
         elif kind=='eeg_status' and peer['role']=='eeg':
             try:
                 if len(body)>32768:raise ValueError('Client status too large')
@@ -116,8 +119,29 @@ class HubRelay:
                     report=sanitize(data['client_status'])
                     with self.lock:self.client_reports[identity]=dict(reported=report,received=time.monotonic())
                 except (ValueError,TypeError):self.state['telemetry_error']='采集端状态格式无效，已忽略；数据连接保留'
+            if isinstance(data.get('capture_event'),dict):
+                try:ack=self.hub.gnautilus_runtime.client_capture_event(identity,data['capture_event'])
+                except Exception as error:ack=dict(ok=False,error=str(error)[:240])
+                ticket=secrets.token_hex(16);now=time.monotonic()
+                with self.lock:
+                    self.tickets[(identity,ticket)]=now
+                    self.tickets={k:v for k,v in self.tickets.items() if now-v<.5}
+                self.send(identity,'hub_status',dict(ticket=ticket,hub_state=self.hub.gnautilus_runtime.feedback(),capture_ack=ack,hub_monotonic_ms=now*1000))
             if data.get('probe'):
                 self.send(identity,'hub_status',dict(probe=data['probe'],hub_state=self.hub.gnautilus_runtime.feedback()))
+        elif kind=='eeg_event' and peer['role']=='eeg':
+            try:
+                if len(body)>32768:raise ValueError('Client event too large')
+                data=json.loads(body)
+                if not isinstance(data,dict):raise ValueError('Client event must be an object')
+                ack=self.hub.gnautilus_runtime.client_capture_event(identity,data)
+            except Exception as error:
+                ack=dict(ok=False,error=str(error)[:240])
+            ticket=secrets.token_hex(16);now=time.monotonic()
+            with self.lock:
+                self.tickets[(identity,ticket)]=now
+                self.tickets={k:v for k,v in self.tickets.items() if now-v<.5}
+            self.send(identity,'hub_status',dict(ticket=ticket,hub_state=self.hub.gnautilus_runtime.feedback(),capture_ack=ack,hub_monotonic_ms=now*1000))
         elif kind=='rpc' and peer['role']=='quest':self.rpc(identity,h,body)
         elif kind=='vr_wire' and peer['role']=='quest':
             try:response=self.hub.vr.process_datagram(body,('relay:'+identity,0))
@@ -162,7 +186,7 @@ class HubRelay:
         The existing 250ms freshness check still runs after the durable commit.
         """
         if ticket_mark is None:return None
-        mapping=self.clock_maps.get(identity);read=block.get('read_monotonic_ns')
+        mapping=self.clock_maps.get(identity);read=block.get('read_completed_monotonic_ns',block.get('read_monotonic_ns'))
         if not mapping or type(read) is not int:return ticket_mark
         now=time.monotonic();age=now*1000-mapping['measured']
         if not 0<=age<15000:return ticket_mark
@@ -195,7 +219,7 @@ class HubRelay:
     def snapshot(self):
         with self.lock:
             clients=[dict(device_id=identity,role='eeg',age_ms=round((time.monotonic()-row['received'])*1000,1),
-                status_fresh=bool(self.state.get('connected') and time.monotonic()-row['received']<3),reported=dict(row['reported'])) for identity,row in self.client_reports.items()]
+                status_fresh=bool((self.state.get('connected') or row.get('lan_ws')) and time.monotonic()-row['received']<3),reported=dict(row['reported'])) for identity,row in self.client_reports.items()]
         return dict(self.state,transport='outbound_wss',endpoint=self.config['url'],clock_maps=self.clock_maps,acquisition_clients=clients)
     def associate_event(self,row):
         from eeg_relay.timing import associate

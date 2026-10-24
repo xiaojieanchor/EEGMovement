@@ -5,6 +5,7 @@ import hashlib
 import json
 import os
 import threading
+import time
 from pathlib import Path
 from .contract import json_bytes,validate_descriptor,validate_block
 
@@ -20,6 +21,7 @@ class StreamJournal:
     def __init__(self,path,descriptor):
         self.path=Path(path);self.path.mkdir(parents=True,exist_ok=True)
         self.descriptor=validate_descriptor(descriptor);self.lock=threading.RLock();self.records={};self.sequences=[];self.intervals=[];self.closed=False
+        self.new_data=threading.Event();self._last_fsync=0.0
         p=self.path/'descriptor.json'
         if p.exists():
             if json_bytes(json.loads(p.read_text('utf-8')))!=json_bytes(self.descriptor):raise ValueError('Stored descriptor changed')
@@ -76,11 +78,15 @@ class StreamJournal:
                 return dict(received_seq=seq,durable_seq=self.durable_seq,duplicate=True)
             self._check_overlap(h);self.raw.seek(0,2);offset=self.raw.tell()
             r=dict(offset=offset,length=len(raw),header=h)
-            self.raw.write(raw);self.raw.flush();os.fsync(self.raw.fileno())
-            self.index.write(json_bytes(r)+b'\n');self.index.flush();os.fsync(self.index.fileno())
+            self.raw.write(raw);self.raw.flush()
+            self.index.write(json_bytes(r)+b'\n');self.index.flush()
+            now=time.monotonic()
+            if now-self._last_fsync>=.5:
+                os.fsync(self.raw.fileno());os.fsync(self.index.fileno());self._last_fsync=now
             self.records[seq]=r;bisect.insort(self.sequences,seq)
             bisect.insort(self.intervals,(h['sample_start'],h['sample_start']+h['sample_count']))
             while self._durable_seq+1 in self.records:self._durable_seq+=1
+            self.new_data.set()
             return dict(received_seq=seq,durable_seq=self.durable_seq,duplicate=False)
 
     def read(self,seq):

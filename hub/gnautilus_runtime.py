@@ -9,6 +9,7 @@ import numpy as np
 from gnautilus_acquisition.contract import validate_descriptor
 from gnautilus_acquisition.storage import StreamJournal
 from .gnautilus import IngestService
+from .lan_ws import LanHubServer,DEFAULT_LAN_WS_PORT
 
 
 class SessionRecorder:
@@ -36,13 +37,15 @@ class SessionRecorder:
 
 
 class GnautilusRuntime:
-    def __init__(self,hub,root,*,port=8767):
+    def __init__(self,hub,root,*,port=8767,lan_ws_port=DEFAULT_LAN_WS_PORT):
         self.hub,self.root=hub,root;self.descriptor=None;self.last_seq=None;self.last_counter=None;self.received_blocks=0;self.last_close=None
-        self.service=IngestService(root,self.accept,on_descriptor=self.describe,on_state=self.connection_state,get_hub_state=self.feedback,port=port)
+        self.last_accept_monotonic=0.0
+        self.service=IngestService(root,self.accept,on_descriptor=self.describe,on_state=self.connection_state,on_capture_event=self.client_capture_event,get_hub_state=self.feedback,port=port)
+        self.lan_ws=LanHubServer(self,port=lan_ws_port)
         self.feedback_boot_id=secrets.token_hex(8);self.feedback_logs=collections.deque(maxlen=20);self.feedback_log_seq=0
         self.paused=False;self.error=None;self.last_source_loss=None;self.stop_event=threading.Event()
     def start(self):
-        self.service.start();self.thread=threading.Thread(target=self._tick,daemon=True,name='g.Nautilus lifecycle');self.thread.start()
+        self.service.start();self.lan_ws.start();self.thread=threading.Thread(target=self._tick,daemon=True,name='g.Nautilus lifecycle');self.thread.start()
     def execution(self):
         peers=[p for p in self.hub.vr.snapshot().get('clients',[]) if p.get('online') and p.get('role')=='unity'] if hasattr(self.hub.vr,'snapshot') else []
         telemetry=peers[0].get('telemetry',{}) if len(peers)==1 else {}
@@ -117,32 +120,88 @@ class GnautilusRuntime:
                 channels=channels,good_channels=0,training_mask=[False]*len(channels),policy='gnautilus_observation_v1',contact_quality_known=False,
                 device_valid=device_valid,finite_eeg=bool(np.all(finite)),counter_continuity=('gap' if counter_gap else 'observed') if counter_columns else 'unknown',
                 checked_monotonic=now,reasons=['electrode_contact_not_measured'],formal_training_ready=False)
-            self.last_seq=header['seq'];self.received_blocks+=1
+            self.last_seq=header['seq'];self.received_blocks+=1;self.last_accept_monotonic=now
             with h.record_lock:
                 if h.recorder:
                     h.recorder.append_block(header,x);h.recording_samples+=len(x)
                     h.recorder.write(json.dumps(dict(kind='quality',stream_id=d['stream_id'],source_epoch=h.epoch,
                         sample_index_start=header['sample_start'],sample_index_end=h.sample_index,device_valid=device_valid,
                         finite_eeg=bool(np.all(finite)),counter_gap=counter_gap,contact_quality_known=False,training_mask=[False]*len(channels)))+'\n')
+    def client_capture_event(self,agent,data):
+        if not isinstance(data,dict) or not hasattr(self.hub,'acquisition'):
+            return dict(ok=False,error='Acquisition service unavailable')
+        if self.service.selected_agent not in (None,agent):
+            return dict(ok=False,error='Agent is not selected source')
+        op=data.get('op')
+        acq=self.hub.acquisition
+        try:
+            if op=='start':
+                current=acq.snapshot()
+                if current.get('active') and current.get('session_id')!=data.get('session_id'):
+                    if current.get('input_surface')=='acquisition_client':acq.stop(reason='operator_stop')
+                    else:return dict(ok=False,error='中枢已有其他采集会话正在进行')
+                if not acq.snapshot().get('active'):
+                    res=acq.start_manual(dict(
+                        build_id=data.get('build_id','gnautilus-qt-selfpaced-v1'),
+                        paradigm='self_paced_motor_imagery',
+                        presentation_protocol=data.get('presentation_protocol','self_paced_axes_v2'),
+                        input_surface='acquisition_client',
+                        task_guidance_version='gaze_navigation_v2',
+                        allow_combos=bool(data.get('allow_combos')),
+                        session_id=data.get('session_id'),
+                        client_token=data.get('client_token'),
+                    ))
+                    return dict(ok=True,op='start',session_id=res['session_id'],recording=res.get('recording'))
+                return dict(ok=True,op='start',session_id=current['session_id'],recording=current.get('recording'))
+            elif op=='event':
+                current=acq.snapshot()
+                if not current.get('active') and isinstance(data.get('session_info'),dict):
+                    info=data['session_info']
+                    acq.start_manual(dict(
+                        build_id=info.get('build_id','gnautilus-qt-selfpaced-v1'),
+                        paradigm='self_paced_motor_imagery',
+                        presentation_protocol=info.get('presentation_protocol','self_paced_axes_v2'),
+                        input_surface='acquisition_client',
+                        task_guidance_version='gaze_navigation_v2',
+                        allow_combos=bool(info.get('allow_combos')),
+                        session_id=info.get('session_id'),
+                        client_token=info.get('client_token'),
+                    ))
+                res=acq.manual_event(data.get('event') or {})
+                return dict(ok=True,op='event',session_id=res['session_id'],ack_seq=res['ack_seq'],sample_index_end=res['sample_index_end'])
+            elif op=='stop':
+                current=acq.snapshot()
+                if current.get('active') and current.get('session_id')==data.get('session_id'):
+                    res=acq.stop(session_id=data.get('session_id'),reason=data.get('reason','completed'))
+                    return dict(ok=True,op='stop',session_id=data.get('session_id'),phase=res.get('phase'))
+                return dict(ok=True,op='stop',session_id=data.get('session_id'),phase='completed')
+            return dict(ok=False,error='Unsupported capture operation')
+        except Exception as error:
+            return dict(ok=False,op=op,session_id=data.get('session_id'),error=str(error)[:240])
     def connection_state(self,state):
         if state.get('state')=='disconnected':self.source_lost('transport_error')
     def source_lost(self,reason):
         h=self.hub
         with h.lock:
+            now=time.monotonic()
+            stale_abort=(reason!='eeg_stream_stale' or h.last_packet is None or
+                         (now-h.last_packet>=1.5 and now-getattr(self,'last_accept_monotonic',0)>=1.5))
             active=bool(h.recorder or hasattr(h,'acquisition') and h.acquisition.snapshot().get('active'))
-            if active:
-                age=round((time.monotonic()-h.last_packet)*1000,2) if h.last_packet is not None else None
+            if active and stale_abort:
+                age=round((now-h.last_packet)*1000,2) if h.last_packet is not None else None
                 self.last_source_loss=dict(reason=reason,source_age_ms=age,sample_index_end=h.sample_index,time_ns=time.time_ns())
                 self.log_feedback('连接',f'采集已中断 · {reason} · 数据年龄 {age}ms','WARN')
             if hasattr(h,'ml') and (h.intent.inference_enabled or h.intent.latest):h.intent.invalidate(reason)
-            if hasattr(h,'acquisition') and h.acquisition.snapshot().get('active'):h.acquisition.stop(reason=reason)
-            elif h.recorder:self.stop_recording()
+            if stale_abort:
+                if hasattr(h,'acquisition') and h.acquisition.snapshot().get('active'):h.acquisition.stop(reason=reason)
+                elif h.recorder:self.stop_recording()
             if hasattr(h,'vr'):h.vr.stop_test()
             if reason!='eeg_stream_stale':h.last_packet=None;h.connected=False
-    def start_recording(self):
+    def start_recording(self,*,allow_recent=False):
         h=self.hub
         with h.lock,h.record_lock:
-            if not self.descriptor or self.descriptor['source_kind']!='gtec_live' or not self.fresh():raise ValueError('需要新鲜的真实g.Nautilus数据；模拟/回放不能启动个人采集')
+            fresh_ok=self.fresh() or (allow_recent and not self.paused and h.last_packet is not None and 0<=time.monotonic()-h.last_packet<1.5)
+            if not self.descriptor or self.descriptor['source_kind']!='gtec_live' or not fresh_ok:raise ValueError('需要新鲜的真实g.Nautilus数据；模拟/回放不能启动个人采集')
             if h.recorder:return
             if hasattr(h,'ml'):h.intent_control.configure({'enabled':False});h.vr.stop_test()
             name=datetime.datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+secrets.token_hex(4)
@@ -197,5 +256,5 @@ class GnautilusRuntime:
                 waveforms=dict(raw=list(h.raw)[-int((fs or 1)*3):],filtered=list(h.raw)[-int((fs or 1)*3):],notch50=[],display_sfreq=fs,seconds=3),
                 gnautilus=dict(ingest,last_session=self.last_close,descriptor=d,storage_root=str(self.root/'data/gnautilus'),error=self.error or ingest.get('error')),events=list(getattr(h,'events',[]))[:20])
     def close(self):
-        self.stop_event.set();self.source_lost('shutdown');self.service.close()
+        self.stop_event.set();self.source_lost('shutdown');self.lan_ws.close();self.service.close()
         if hasattr(self,'thread'):self.thread.join(1)

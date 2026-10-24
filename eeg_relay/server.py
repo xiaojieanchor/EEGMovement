@@ -7,7 +7,7 @@ from .spool import Spool,CapacityError
 
 log=logging.getLogger('eeg_relay')
 RULES={
- 'eeg':{'eeg_block','eeg_status','clock','update_state'},
+ 'eeg':{'eeg_block','eeg_status','eeg_event','clock','update_state'},
  'quest':{'rpc','quest_event','vr_wire','preview','clock','update_state'},
  'hub':{'hub_ack','hub_reject','hub_status','rpc_reply','vr_wire','clock_reply','event_ack'},
 }
@@ -22,7 +22,7 @@ class Peer:
         if self.closed:return False
         try:self.out.put_nowait(item);return True
         except queue.Full:
-            if self.lane=='preview':return False
+            if self.lane in ('preview','backfill'):return False
             self.close('bounded_queue_full');return False
     def write(self):
         while not self.closed:

@@ -83,9 +83,9 @@ class Connection:
         raise ConnectionError('；'.join(errors))
     def send(self,header,body=b''):
         if not self.lock.acquire(timeout=5):raise TimeoutError('Lane send queue deadline')
-        timer=threading.Timer(5,self.abort);timer.daemon=True;timer.start()
+        self.sending=True;self.last_send=time.monotonic()
         try:self.ws.send(pack(header,body))
-        finally:timer.cancel();self.lock.release()
+        finally:self.sending=False;self.lock.release()
     def receive(self,timeout=None):
         raw=self.ws.recv(timeout=timeout)
         return (json.loads(raw),b'') if isinstance(raw,str) else unpack(raw)

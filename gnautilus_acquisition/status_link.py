@@ -6,6 +6,11 @@ from .feedback import HubFeedbackLog
 
 
 class StatusLink:
+    def __new__(cls,*args,**kwargs):
+        if cls is StatusLink and args and isinstance(args[0],dict) and args[0].get('mode')=='lan_ws':
+            from .lan_client import LanStatusLink
+            return object.__new__(LanStatusLink)
+        return object.__new__(cls)
     def __init__(self,enrollment,on_event=None):
         self.config=dict(enrollment);self.lock=threading.RLock();self.stop_event=threading.Event()
         self.on_event=on_event or (lambda *a:None);self.last_hub=0;self.hub={};self.health={}

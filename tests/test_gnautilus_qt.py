@@ -8,8 +8,9 @@ import json
 from unittest.mock import patch
 from pathlib import Path
 import numpy as np
-from PySide6 import QtWidgets
+from PySide6 import QtCore,QtGui,QtWidgets
 from gnautilus_acquisition.qt_gui import Workbench
+from gnautilus_acquisition.client import CAPTURE_LABELS,capture_task_spec
 from gnautilus_acquisition.display import PreviewBuffer,EventLog
 from tests.test_gnautilus_transport import descriptor
 from tests.test_gnautilus_gui import enrollment
@@ -23,9 +24,38 @@ class FixtureController:
         t=np.arange(2560)/512
         a=np.stack([28*np.sin(2*np.pi*(8+i*.17)*t)+10*np.sin(2*np.pi*1.3*t) for i in range(32)],axis=1).astype(np.float32)
         a[1100:1130,2]=np.nan;self.preview.push(a,time.monotonic_ns());self.log=EventLog()
+        self.capture=dict(active=False,session_id=None,held=None,held_duration_s=0.0,allow_combos=False,labels=list(CAPTURE_LABELS[:5]),instructions={l:capture_task_spec(l)['instruction'] for l in CAPTURE_LABELS},events_saved=0,periods_completed=0,hub_synced=True,hub_ack_seq=0,hub_recording='hub-session-01',last_recording=None,error=None)
         for stage,message in [('采集','软件测试夹具：32路合成波形，未访问设备'),('写盘','软件夹具：本地保存计数检查'),('中枢','软件夹具：TLS回执状态展示'),('中枢·标签','软件夹具：LEFT / holding'),('中枢·VR','软件夹具：2个身份在线'),('异常','软件夹具：接触质量仍未验证')]:self.log.add(stage,'INFO',message)
+    def start_capture(self,allow_combos=False):
+        labels=list(CAPTURE_LABELS) if allow_combos else list(CAPTURE_LABELS[:5])
+        instructions={l:capture_task_spec(l)['instruction'] for l in CAPTURE_LABELS}
+        self.capture.update(active=True,session_id='cap-session-1234',held=None,held_duration_s=0.0,allow_combos=bool(allow_combos),labels=labels,instructions=instructions,events_saved=1,periods_completed=0,hub_ack_seq=1)
+        return dict(self.capture)
+    def hold_start(self,action_label,pointer_source='desktop_pointer',page_active=True):
+        self.capture.update(held=action_label,held_duration_s=0.4,events_saved=self.capture['events_saved']+1,hub_ack_seq=self.capture['hub_ack_seq']+1)
+        self.log.add('标签','INFO',f'长按开始：{action_label} ({pointer_source})')
+        return dict(self.capture)
+    def capture_heartbeat(self,page_active=True):
+        if self.capture['held']:
+            self.capture['held_duration_s']=round(self.capture['held_duration_s']+0.3,1)
+            self.capture['events_saved']+=1
+        return dict(self.capture)
+    def hold_end(self,action_label=None,pointer_source=None,reason='key_up',page_active=True):
+        prev=self.capture['held']
+        if prev:
+            self.capture.update(held=None,held_duration_s=0.0,events_saved=self.capture['events_saved']+1,periods_completed=self.capture['periods_completed']+1,hub_ack_seq=self.capture['hub_ack_seq']+1)
+            self.log.add('标签','INFO',f'松开结束：{prev} -> UNKNOWN ({reason})')
+        return dict(self.capture)
+    def stop_capture(self,reason='completed'):
+        if self.capture['held']:self.hold_end(reason=reason)
+        self.capture.update(active=False,held=None,held_duration_s=0.0,last_recording='session_fixture_01')
+        self.remote_stopped=True
+        return dict(self.capture)
+    def capture_snapshot(self):
+        return dict(self.capture)
     def snapshot(self):
-        return dict(state='receiving',samples=25600,descriptor=self.descriptor,path='TEST-ONLY / raw.f32',network=dict(connected=True,backlog=2,durable_seq=998,hub=dict(recording_active=True,recording_samples=15360,label='LEFT',phase='holding',vr_online=2,model_state='not_configured',motion_state='STOP')))
+        hub_active=not self.capture['active'] and not getattr(self,'remote_stopped',False)
+        return dict(state='receiving',samples=25600,descriptor=self.descriptor,path='TEST-ONLY / raw.f32',capture=dict(self.capture),network=dict(connected=True,backlog=2,durable_seq=998,hub=dict(recording_active=hub_active or self.capture['active'],recording_samples=15360,label=self.capture['held'] if self.capture['active'] else ('LEFT' if hub_active else None),phase=(('holding' if self.capture['held'] else 'released') if self.capture['active'] else ('holding' if hub_active else 'completed')),vr_online=2,model_state='not_configured',motion_state='STOP')))
     def stop(self):self.running=False
 
 
@@ -166,6 +196,61 @@ assert marker.exists() and status.exists()
         self.assertEqual(result['client']['samples'],42)
         self.assertEqual(result['hub']['sample_index_end'],42)
         self.assertNotIn('DO-NOT-EXPORT',json.dumps(result))
+
+    def test_capture_pad_press_hold_and_release_marks_periods_and_reverts_to_unknown(self):
+        for lbl in ('FORWARD','LEFT','REST','RIGHT','BACKWARD'):
+            self.assertTrue(self.w.capture_buttons[lbl].isVisible())
+        for lbl in ('FORWARD_LEFT','FORWARD_RIGHT','BACKWARD_LEFT','BACKWARD_RIGHT'):
+            self.assertFalse(self.w.capture_buttons[lbl].isVisible())
+        self.w.capture_combos.setChecked(True);self.app.processEvents()
+        for lbl in ('FORWARD_LEFT','FORWARD_RIGHT','BACKWARD_LEFT','BACKWARD_RIGHT'):
+            self.assertTrue(self.w.capture_buttons[lbl].isVisible())
+        self.w.capture_combos.setChecked(False);self.app.processEvents()
+        self.w.start_capture();self.app.processEvents()
+        self.assertTrue(self.c.capture['active'])
+        self.assertIn('松开 · 未标注',self.w.capture_state.text())
+        fwd_btn=self.w.capture_buttons['FORWARD']
+        pos=QtCore.QPointF(fwd_btn.width()/2,fwd_btn.height()/2)
+        press=QtGui.QMouseEvent(QtCore.QEvent.MouseButtonPress,pos,pos,QtCore.Qt.LeftButton,QtCore.Qt.LeftButton,QtCore.Qt.NoModifier)
+        fwd_btn.mousePressEvent(press);self.app.processEvents()
+        self.assertEqual(self.c.capture['held'],'FORWARD')
+        self.assertTrue(fwd_btn.held)
+        self.assertIn('正在标注：向前',self.w.capture_state.text())
+        release=QtGui.QMouseEvent(QtCore.QEvent.MouseButtonRelease,pos,pos,QtCore.Qt.LeftButton,QtCore.Qt.NoButton,QtCore.Qt.NoModifier)
+        fwd_btn.mouseReleaseEvent(release);self.app.processEvents()
+        self.assertIsNone(self.c.capture['held'])
+        self.assertFalse(fwd_btn.held)
+        self.assertEqual(self.c.capture['periods_completed'],1)
+        self.assertIn('松开 · 未标注',self.w.capture_state.text())
+        key_down=QtGui.QKeyEvent(QtCore.QEvent.KeyPress,QtCore.Qt.Key_Space,QtCore.Qt.NoModifier,' ',False,1)
+        self.w.keyPressEvent(key_down);self.app.processEvents()
+        self.assertEqual(self.c.capture['held'],'REST')
+        self.assertTrue(self.w.capture_buttons['REST'].held)
+        self.assertIn('正在标注：静止',self.w.capture_state.text())
+        key_up=QtGui.QKeyEvent(QtCore.QEvent.KeyRelease,QtCore.Qt.Key_Space,QtCore.Qt.NoModifier,' ',False,1)
+        self.w.keyReleaseEvent(key_up);self.app.processEvents()
+        self.assertIsNone(self.c.capture['held'])
+        self.assertEqual(self.c.capture['periods_completed'],2)
+        esc=QtGui.QKeyEvent(QtCore.QEvent.KeyPress,QtCore.Qt.Key_Escape,QtCore.Qt.NoModifier,'',False,1)
+        self.w.keyPressEvent(esc);self.app.processEvents()
+        self.assertFalse(self.c.capture['active'])
+        self.assertIn('已保存',self.w.capture_state.text())
+        self.w.filter.setCurrentText('标签');self.app.processEvents()
+        self.assertIn('FORWARD',self.w.log_view.toPlainText())
+
+    def test_connection_mode_switches_between_public_relay_and_lan_ws_hotspot(self):
+        self.c.running=False;self.w.controller.collector=None
+        self.w.fields['lan_host'].setText('192.168.137.1:8768')
+        idx=self.w.connection_mode_box.findData('lan_ws')
+        self.w.connection_mode_box.setCurrentIndex(idx);self.app.processEvents()
+        self.assertIsNotNone(self.w.update_enrollment)
+        self.assertEqual(self.w.update_enrollment['mode'],'lan_ws')
+        self.assertEqual(self.w.update_enrollment['host'],'192.168.137.1')
+        self.assertIn('192.168.137.1:8768',self.w.pairing_status.text())
+        self.assertIn('WebSocket',self.w.pairing_status.text())
+        idx_auto=self.w.connection_mode_box.findData('automatic')
+        self.w.connection_mode_box.setCurrentIndex(idx_auto);self.app.processEvents()
+        self.assertEqual(self.w.profile()['connection_mode'],'automatic')
 
 
 if __name__=='__main__':unittest.main()

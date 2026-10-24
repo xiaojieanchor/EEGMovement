@@ -50,9 +50,10 @@ def provision(root,host,port=8767,agent_id=None):
 
 
 class IngestService:
-    def __init__(self,root,on_block,*,on_state=None,on_descriptor=None,get_hub_state=None,host='0.0.0.0',port=8767,freshness_ms=250):
+    def __init__(self,root,on_block,*,on_state=None,on_descriptor=None,on_capture_event=None,get_hub_state=None,host='0.0.0.0',port=8767,freshness_ms=250):
         self.root=Path(root);self.base=self.root/'hub/runtime/gnautilus';self.host,self.port=host,port
         self.on_block,self.on_state,self.on_descriptor=on_block,on_state or (lambda s:None),on_descriptor or (lambda d:None)
+        self.on_capture_event=on_capture_event or (lambda agent,event:dict(ok=False,error='Capture event handler not configured'))
         self.get_hub_state=get_hub_state or (lambda:dict(model_state='not_configured',recording_active=False,label=None,phase='idle',vr_online=0))
         self.freshness_ms=freshness_ms;self.lock=threading.RLock();self.stop=threading.Event();self.journals={};self.connections={};self.clients=set();self.threads=[]
         self.selected_agent=None;self.status=dict(enabled=False,connected=False,state='not_provisioned',error=None,received_blocks=0,durable_blocks=0,backfill_blocks=0,expired_blocks=0)
@@ -143,6 +144,11 @@ class IngestService:
                     safe={k:h.get(k) for k in ['sdk_state','queue_blocks','disk_state','error','stream_id']}
                     with self.lock:self.status['agent_health']=safe
                     ticket=secrets.token_hex(16);issued=time.monotonic();send_frame(s,dict(kind='status_ok',ticket=ticket,hub_state=self.get_hub_state()))
+                elif kind=='capture_event':
+                    if body:raise ValueError('Capture event body unexpected')
+                    ack=self.on_capture_event(agent,h.get('event') or {})
+                    ticket=secrets.token_hex(16);issued=time.monotonic()
+                    send_frame(s,dict(kind='capture_ack',ticket=ticket,hub_state=self.get_hub_state(),capture_ack=ack))
                 elif kind=='close':
                     send_frame(s,dict(kind='closed',durable_seq=j.durable_seq if descriptor else 0));break
                 else:raise ValueError('Unsupported message')
@@ -178,6 +184,7 @@ class IngestService:
             if self.selected_agent is None:self.selected_agent=agent
         result=j.append(h,body);now=time.monotonic()
         live=source_mark is not None and 0<=now-source_mark<self.freshness_ms/1000 and h['mode']=='live'
+        bridged=[]
         with self.lock:
             cursor=self.live_cursors.get(identity,(-1,-1))
             # A durable backfill may race the data lane. Disk deduplication must
@@ -185,9 +192,23 @@ class IngestService:
             accepted=bool(live and agent==self.selected_agent and h['seq']>cursor[0] and h['sample_start']>=cursor[1])
             self.status['received_blocks']+=1;self.status['durable_blocks']+=not result['duplicate'];self.status['backfill_blocks']+=not live
             self.status['expired_blocks']+=h['mode']=='live' and not live
-            if accepted:self.live_cursors[identity]=h['seq'],h['sample_start']+h['sample_count']
+            if accepted:
+                if cursor[0]>0 and 1<h['seq']-cursor[0]<=8:
+                    expected_start=cursor[1];candidates=[]
+                    with j.lock:
+                        for m_seq in range(cursor[0]+1,h['seq']):
+                            if m_seq not in j.records:candidates=[];break
+                            mh,mraw=j.read(m_seq)
+                            if mh['sample_start']!=expected_start:candidates=[];break
+                            expected_start+=mh['sample_count']
+                            candidates.append((mh,validate_block(mh,mraw,d)))
+                    if candidates and expected_start==h['sample_start']:bridged=candidates
+                self.live_cursors[identity]=h['seq'],h['sample_start']+h['sample_count']
         if accepted:
-            self.on_descriptor(d);self.on_block(d,dict(h,hub_source_monotonic_ns=int(source_mark*1e9)),x)
+            self.on_descriptor(d)
+            for mh,mx in bridged:
+                self.on_block(d,dict(mh,mode='live',hub_source_monotonic_ns=int(source_mark*1e9)),mx)
+            self.on_block(d,dict(h,hub_source_monotonic_ns=int(source_mark*1e9)),x)
             with self.lock:
                 self.last_live=source_mark;self.status.update(enabled=True,connected=True,state='receiving',descriptor=d,last_seq=h['seq'],last_sample_end=h['sample_start']+h['sample_count'],agent_id=agent,transport='public_relay')
         return dict(result,live_accepted=accepted)

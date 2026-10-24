@@ -49,7 +49,7 @@ def test_prepared_windows_recheck_actual_original_and_label_source(tmp_path):
 
 
 def test_development_evaluation_and_best_export_survive_resume(tmp_path):
-    import torch
+    torch=pytest.importorskip('torch')
     from gnautilus_ml.algorithms import Classifier
     torch.set_num_threads(2);rng=np.random.default_rng(4);x=rng.normal(size=(16,3,50)).astype(np.float32)
     y=np.tile([0,1],8);groups=np.repeat(['a','b'],8);dev=x+4;events=[]

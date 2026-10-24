@@ -21,7 +21,10 @@ def launch(root,dir,health_path=None,*,start_receiving=False,status_path=None):
 
 def health(root,candidate,expected_version=None,*,start_receiving=False,status_path=None):
     report=root/'updates'/('health-'+uuid.uuid4().hex+'.json');report.parent.mkdir(parents=True,exist_ok=True)
-    process=launch(root,str(candidate.relative_to(root)),report,start_receiving=start_receiving,status_path=status_path)
+    extra={}
+    if start_receiving:extra['start_receiving']=True
+    if status_path is not None:extra['status_path']=status_path
+    process=launch(root,str(candidate.relative_to(root)),report,**extra)
     for _ in range(150):
         if report.exists():
             try:

@@ -145,8 +145,11 @@ class GuidedAcquisition:
             return self.snapshot()
 
     def event(self,data):
-        if getattr(self.hub,'new_device_mode',False) and not self.hub.gnautilus_runtime.fresh():
-            self.stop(reason='source_changed');raise ValueError('EEG数据已中断，标签会话已关闭')
+        if getattr(self.hub,'new_device_mode',False):
+            rt=self.hub.gnautilus_runtime
+            stalled=getattr(rt,'paused',False) or self.hub.last_packet is None or (self.clock()-self.hub.last_packet>=1.5 and self.clock()-getattr(rt,'last_accept_monotonic',0)>=1.5)
+            if stalled:
+                self.stop(reason='source_changed');raise ValueError('EEG数据已中断，标签会话已关闭')
         if self.state.get('paradigm')=='self_paced_motor_imagery':return self.manual_event(data)
         with self.hub.lock,self.lock:
             if not self.state.get('active') or data.get('session_id')!=self.state['session_id']:
@@ -226,15 +229,18 @@ class GuidedAcquisition:
     def expire(self):
         with self.hub.lock,self.lock:
             manual=self.state.get('paradigm')=='self_paced_motor_imagery'
-            if getattr(self.hub,'new_device_mode',False) and manual and self.state.get('active') and self.state.get('label') is not None and self.clock()-self.last_seen>.75:
+            client_surface=self.state.get('input_surface')=='acquisition_client'
+            hold_timeout=2.5 if client_surface else .75
+            idle_timeout=5.0 if client_surface else (2 if manual else 10)
+            if getattr(self.hub,'new_device_mode',False) and manual and self.state.get('active') and self.state.get('label') is not None and self.clock()-self.last_seen>hold_timeout:
                 self.stop(reason='sender_timeout');return
-            if self.state.get('active') and (self.clock()-self.last_seen>(2 if manual else 10) or self.clock()-self.started>(7200 if manual else 1800)):
+            if self.state.get('active') and (self.clock()-self.last_seen>idle_timeout or self.clock()-self.started>(7200 if manual else 1800)):
                 self.stop(reason='sender_timeout')
 
     def start_manual(self,data):
         build=data.get('build_id')
         surface=data.get('input_surface','vr')
-        if surface not in ['vr','desktop']:raise ValueError('Unsupported collection surface')
+        if surface not in ['vr','desktop','acquisition_client']:raise ValueError('Unsupported collection surface')
         protocol=data.get('presentation_protocol')
         if not isinstance(build,str) or not 1<=len(build)<=120 or protocol not in ['self_paced_hold_v1','self_paced_axes_v2']:raise ValueError('Manual protocol and build identity required')
         intent_policy=control_policy_metadata()
@@ -247,23 +253,31 @@ class GuidedAcquisition:
                 # v2 clients already consume arbitrary issued instruction text and allowed labels.
                 if mode in ['navigation_mi_gaze','navigation_mi_only','gaze_only','no_control','interference'] and data.get('task_guidance_version')!='gaze_navigation_v2':
                     raise ValueError('当前客户端不支持版本化任务提示，请刷新电脑采集页面或更新Quest后开始；尚未建立记录')
-            if self.hub.source_mode!='live' or self.hub.last_packet is None or not 0<=self.clock()-self.hub.last_packet<.25:raise ValueError('Fresh official live Socket required')
+            max_age=1.5 if surface=='acquisition_client' else .25
+            if self.hub.source_mode!='live' or self.hub.last_packet is None or not 0<=self.clock()-self.hub.last_packet<max_age:raise ValueError('Fresh official live Socket required')
             with self.hub.record_lock:
                 if self.hub.recorder:raise ValueError('Finish current recording first')
             if hasattr(self.hub,'intent_control'):self.hub.intent_control.configure({'enabled':False})
-            self.hub.start_recording();self.last_seen=self.started=self.clock();self.last_payload=self.last_ack=None
-            self.state=dict(active=True,session_id=secrets.token_hex(16),recording=self.hub.recording_name,paradigm='self_paced_motor_imagery',
+            if surface=='acquisition_client' and getattr(self.hub,'new_device_mode',False) and hasattr(self.hub,'gnautilus_runtime'):
+                self.hub.gnautilus_runtime.start_recording(allow_recent=True)
+            else:
+                self.hub.start_recording()
+            self.last_seen=self.started=self.clock();self.last_payload=self.last_ack=None
+            requested_id=data.get('session_id')
+            session_id=requested_id if surface=='acquisition_client' and isinstance(requested_id,str) and len(requested_id)==32 and all(c in '0123456789abcdef' for c in requested_id) else secrets.token_hex(16)
+            self.state=dict(active=True,session_id=session_id,recording=self.hub.recording_name,paradigm='self_paced_motor_imagery',
                             presentation_protocol=protocol,collection_day=datetime.datetime.now().astimezone().date().isoformat(),labels=ACTION_LABELS if protocol=='self_paced_axes_v2' else ACTION_LABELS[:5],build_id=build,phase='unlabelled',label=None,events_saved=0,last_seq=0,
                             formal_training_ready=False,intention_verified=False,hold_lease_ms=750,input_surface=surface)
             self.state.update(intent_policy)
             if getattr(self.hub,'new_device_mode',False):
                 from gnautilus_ml.tasks import task_spec
                 self.state.update(control_policy_metadata(mode))
-                labels=['REST'] if mode in ['no_control','interference'] else ACTION_LABELS[:5]
+                labels=['REST'] if mode in ['no_control','interference'] else ACTION_LABELS if protocol=='self_paced_axes_v2' and data.get('allow_combos') else ACTION_LABELS[:5]
+                cardinal=[l for l in labels if l in ('REST','FORWARD','BACKWARD','LEFT','RIGHT')]
                 self.state.update(experiment_mode=mode,task_binding_version=task_spec('REST',mode)['task_binding_version'],labels=labels,
-                                  task_instructions={label:task_spec(label,mode) for label in labels},task_instructions_list=[task_spec(label,mode) for label in labels])
+                                  task_instructions={label:task_spec(label,mode) for label in cardinal},task_instructions_list=[task_spec(label,mode) for label in cardinal])
             self.state['donning_id']=getattr(getattr(self.hub,'calibration',None),'placement_id',None)
-            self.desktop_token=secrets.token_urlsafe(24) if surface=='desktop' else None
+            self.desktop_token=(data.get('client_token') or secrets.token_urlsafe(24)) if surface in ('desktop','acquisition_client') else None
             self._write(dict(kind='self_paced_session',**self.state,hub_monotonic=self.clock(),
                              label_semantics='User-held button instruction, not verified intention; release is UNKNOWN, never REST',
                              motor_artifact_confound=True,display_timing_verified=False))
@@ -275,10 +289,13 @@ class GuidedAcquisition:
         # Unity JsonUtility encodes a null string as an empty string.
         data=dict(data)
         client_token=data.pop('client_token',None)
+        client_sample_index_end=data.pop('client_sample_index_end',None)
+        hold_duration_ms=data.pop('hold_duration_ms',None)
         if data.get('label')=='':data['label']=None
         with self.hub.lock,self.lock:
             if not self.state.get('active') or data.get('session_id')!=self.state['session_id']:raise ValueError('Manual session absent or changed')
-            desktop=self.state.get('input_surface')=='desktop'
+            surface=self.state.get('input_surface','vr')
+            desktop=surface in ('desktop','acquisition_client')
             if desktop and not secrets.compare_digest(str(client_token or ''),self.desktop_token or ''):raise ValueError('Desktop capture belongs to another page')
             allowed={'session_id','seq','label','phase','sender_monotonic_ms','sender_frame','clock_offset_ms','sync_rtt_ms','head_pose','controller_pose','xr_active','pointer_source','page_active'}
             if set(data)-allowed:raise ValueError('Unsupported manual fields')
@@ -300,11 +317,16 @@ class GuidedAcquisition:
             if seq==self.state['last_seq']:
                 if payload!=self.last_payload:raise ValueError('Duplicate manual event changed')
                 self.last_seen=self.clock();return copy.deepcopy(self.last_ack)
-            if seq!=self.state['last_seq']+1:raise ValueError('Manual events must arrive in sequence')
+            if surface=='acquisition_client':
+                if seq<self.state['last_seq']+1:return copy.deepcopy(self.last_ack or dict(ok=True,session_id=self.state['session_id'],ack_seq=self.state['last_seq'],sample_index_end=self.hub.sample_index,source_epoch=self.hub.epoch))
+            elif seq!=self.state['last_seq']+1:raise ValueError('Manual events must arrive in sequence')
             current=self.state.get('label')
-            if phase=='hold_start' and (label is None or current is not None):raise ValueError('Release current label before another start')
-            if phase=='hold_end' and (current is None or label!=current):raise ValueError('Held label end mismatch')
-            if phase=='heartbeat' and label!=current:raise ValueError('Heartbeat must match held label or UNKNOWN')
+            if surface!='acquisition_client':
+                if phase=='hold_start' and (label is None or current is not None):raise ValueError('Release current label before another start')
+                if phase=='hold_end' and (current is None or label!=current):raise ValueError('Held label end mismatch')
+                if phase=='heartbeat' and label!=current:raise ValueError('Heartbeat must match held label or UNKNOWN')
+            else:
+                if phase=='hold_start' and label is None:raise ValueError('Release current label before another start')
             now=self.clock();fresh=self.hub.last_packet is not None and 0<=now-self.hub.last_packet<.25
             source_instructions={}
             if getattr(self.hub,'new_device_mode',False):
@@ -317,12 +339,24 @@ class GuidedAcquisition:
                 source_instructions=dict(experiment_mode=mode,gaze_instruction=eye,limb_instruction=limb,navigation_instruction=label if phase=='hold_start' else None)
                 if mode in NAVIGATION_MODES:
                     from gnautilus_ml.tasks import task_spec
-                    spec=task_spec(label,mode) if label and phase!='hold_end' else {}
+                    if label in MAPPING and phase!='hold_end':
+                        spec=task_spec(label,mode)
+                    elif label and phase!='hold_end':
+                        combos={'FORWARD_LEFT':('UP_LEFT','IMAGINE_WALK_FORWARD_LEFT'),'FORWARD_RIGHT':('UP_RIGHT','IMAGINE_WALK_FORWARD_RIGHT'),
+                                'BACKWARD_LEFT':('DOWN_LEFT','IMAGINE_WALK_BACKWARD_LEFT'),'BACKWARD_RIGHT':('DOWN_RIGHT','IMAGINE_WALK_BACKWARD_RIGHT')}
+                        ceye,cmotor=combos.get(label,('UNKNOWN','UNKNOWN'))
+                        spec=dict(gaze_instruction=ceye if mode=='navigation_mi_gaze' else 'CENTER',limb_instruction='NOT_PRESCRIBED',motor_instruction=cmotor,
+                                  primary_source='motor_imagery',auxiliary_source='gaze' if mode=='navigation_mi_gaze' else 'none',task_binding_version='navigation_mi_gaze_v3')
+                    else:
+                        spec={}
                     source_instructions.update({key:spec.get(key,'UNKNOWN') for key in ['gaze_instruction','limb_instruction','motor_instruction','primary_source','auxiliary_source','task_binding_version']})
-            self._write(dict(kind='marker',code='manual_'+phase,**data,**source_instructions,hub_receive_monotonic=now,sample_index_end=self.hub.sample_index,source_epoch=self.hub.epoch,
+            extra_meta={}
+            if type(client_sample_index_end) is int and client_sample_index_end>=0:extra_meta['client_sample_index_end']=client_sample_index_end
+            if type(hold_duration_ms) in (int,float) and math.isfinite(hold_duration_ms) and hold_duration_ms>=0:extra_meta['hold_duration_ms']=hold_duration_ms
+            self._write(dict(kind='marker',code='manual_'+phase,**data,**source_instructions,**extra_meta,hub_receive_monotonic=now,sample_index_end=self.hub.sample_index,source_epoch=self.hub.epoch,
                              source_fresh=fresh,source_mode=self.hub.source_mode,channel_training_mask=self._mask(fresh),
                              estimated_event_hub_ms=data['sender_monotonic_ms']+data['clock_offset_ms'],sync_uncertainty_ms=data['sync_rtt_ms']/2,
-                             intention_verified=False,motor_artifact_confound=True,input_surface=self.state.get('input_surface','vr'),label_semantics='held instruction; no label on release',label_axes=LABEL_AXES[ACTION_LABELS.index(label)] if label else None,hold_lease_ms=750))
+                             intention_verified=False,motor_artifact_confound=True,input_surface=surface,label_semantics='held instruction; no label on release',label_axes=LABEL_AXES[ACTION_LABELS.index(label)] if label else None,hold_lease_ms=750))
             self.last_seen=now;self.last_payload=payload
             self.state.update(last_seq=seq,events_saved=seq,label=None if phase=='hold_end' else label,phase='unlabelled' if phase=='hold_end' or label is None else 'held')
             self.last_ack=dict(ok=True,session_id=self.state['session_id'],ack_seq=seq,sample_index_end=self.hub.sample_index,source_epoch=self.hub.epoch)

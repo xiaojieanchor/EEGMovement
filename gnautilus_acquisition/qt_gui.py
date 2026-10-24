@@ -11,6 +11,7 @@ from pathlib import Path
 import numpy as np
 from PySide6 import QtCore,QtGui,QtWidgets
 from .gui import AcquisitionController,SettingsStore,load_enrollment
+from .client import CAPTURE_LABELS,CAPTURE_NAMES,capture_task_spec
 from .display import EventLog,envelope_points
 from . import __version__
 
@@ -54,6 +55,48 @@ class MotionButton(QtWidgets.QPushButton):
         painter.setFont(self.font());painter.drawText(self.rect(),QtCore.Qt.AlignCenter,self.text())
         if self.hasFocus():
             painter.setPen(QtGui.QPen(QtGui.QColor('#4a9f95'),1,QtCore.Qt.DotLine));painter.setBrush(QtCore.Qt.NoBrush);painter.drawRoundedRect(self.rect().adjusted(4,4,-4,-4),6,6)
+
+
+class CaptureKey(QtWidgets.QPushButton):
+    pressed_hold=QtCore.Signal(str)
+    released_hold=QtCore.Signal(str)
+    def __init__(self,action_label,text,diagonal=False,parent=None):
+        super().__init__(text,parent);self.action_label=action_label;self.diagonal=diagonal;self.held=False;self.hover=False;self.pressing=False
+        self.setCursor(QtCore.Qt.PointingHandCursor);self.setMinimumSize(86,58)
+        self.setSizePolicy(QtWidgets.QSizePolicy.Expanding,QtWidgets.QSizePolicy.Expanding)
+        font=QtGui.QFont('Microsoft YaHei UI',11 if diagonal else 13,QtGui.QFont.DemiBold);self.setFont(font)
+        self.setAccessibleName('按住标注'+text)
+    def set_held(self,held):
+        if self.held!=bool(held):self.held=bool(held);self.update()
+    def enterEvent(self,event):self.hover=True;self.update();super().enterEvent(event)
+    def leaveEvent(self,event):self.hover=False;self.update();super().leaveEvent(event)
+    def mousePressEvent(self,event):
+        if event.button()==QtCore.Qt.LeftButton and self.isEnabled():
+            self.pressing=True;self.pressed_hold.emit(self.action_label);event.accept();return
+        super().mousePressEvent(event)
+    def mouseMoveEvent(self,event):
+        if self.pressing:
+            pos=event.position().toPoint() if hasattr(event,'position') else event.pos()
+            if not self.rect().contains(pos):
+                self.pressing=False;self.released_hold.emit(self.action_label);event.accept();return
+        super().mouseMoveEvent(event)
+    def mouseReleaseEvent(self,event):
+        if event.button()==QtCore.Qt.LeftButton and self.pressing:
+            self.pressing=False;self.released_hold.emit(self.action_label);event.accept();return
+        super().mouseReleaseEvent(event)
+    def paintEvent(self,event):
+        painter=QtGui.QPainter(self);painter.setRenderHint(QtGui.QPainter.Antialiasing)
+        enabled=self.isEnabled()
+        rect=self.rect().adjusted(3,3,-3,-3) if self.held else self.rect().adjusted(1,1,-1,-1)
+        bg=QtGui.QColor('#d0e7ef' if self.held else '#e5f0f5' if (self.hover and enabled) else '#f2f6f8')
+        border=QtGui.QColor('#62a5bc' if self.held else '#d9e3e8' if enabled else '#e4ecee')
+        painter.setBrush(bg);painter.setPen(QtGui.QPen(border,2 if self.held else 1))
+        painter.drawRoundedRect(rect,18,18)
+        if self.held:
+            painter.setBrush(QtCore.Qt.NoBrush);painter.setPen(QtGui.QPen(QtGui.QColor('#91c5d6'),2))
+            painter.drawRoundedRect(rect.adjusted(2,2,-2,-2),16,16)
+        painter.setPen(QtGui.QColor('#263e4b' if enabled else '#9aa9b2'))
+        painter.setFont(self.font());painter.drawText(rect,QtCore.Qt.AlignCenter,self.text())
 
 
 class Metric(QtWidgets.QFrame):
@@ -135,6 +178,9 @@ QLabel#number {font-size:25px;font-family:"Segoe UI";font-weight:600;}
 QLabel#eyebrow {font-size:11px;color:#748780;}
 QLabel#muted {color:#788c85;font-size:11px;}
 QLabel#small {color:#84958e;font-size:10px;}
+QLabel#captureState {font-size:15px;font-weight:600;color:#254653;}
+QLabel#captureHint {font-size:11px;color:#627780;}
+QLabel#captureDetail {font-size:10px;color:#73848d;}
 QLabel#pill {color:#147d73;background:#e8f5ee;border:1px solid #d3e9dc;border-radius:12px;padding:5px 12px;}
 QLineEdit,QComboBox {background:#fafcfb;border:1px solid #dce6e0;border-radius:7px;padding:8px;color:#28423c;selection-background-color:#cce7dc;}
 QLineEdit:focus,QComboBox:focus {border:1px solid #63ab95;background:white;}
@@ -165,7 +211,7 @@ class Workbench(QtWidgets.QMainWindow):
         self.status_link=None
         try:profile=self.settings.load()
         except (OSError,ValueError,TypeError):profile={};self.events.add('校验','WARN','界面设置文件无法读取，已使用默认路径；原始记录不受影响')
-        defaults=dict(sdk_dir='C:/Program Files/gtec/gNEEDaccess Client API',serial='',pairing_path='',storage_root=str(base/'recordings'),layout_path='');defaults.update(profile)
+        defaults=dict(sdk_dir='C:/Program Files/gtec/gNEEDaccess Client API',serial='',pairing_path='',storage_root=str(base/'recordings'),layout_path='',connection_mode='automatic',lan_host='');defaults.update(profile)
         # Connection identity is internal application state, never a user input.
         # Even explicitly saved legacy paths migrate to automatic public mode.
         defaults['pairing_path']=str(self.identity_path)
@@ -180,6 +226,12 @@ class Workbench(QtWidgets.QMainWindow):
             if directory is not None:
                 choose=MotionButton('…');choose.setFixedWidth(32);choose.setMinimumWidth(32);choose.clicked.connect(lambda checked=False,k=key,d=directory:self.browse(k,d));row.addWidget(choose)
             side.addLayout(row)
+        side.addWidget(label('中枢传输方式','eyebrow'));self.connection_mode_box=QtWidgets.QComboBox()
+        for title,value in [('公网中转连接（保留现有逻辑）','automatic'),('中枢热点／局域网 WebSocket 直连','lan_ws'),('热点直连优先 · 自动回退公网','auto_lan_first')]:self.connection_mode_box.addItem(title,value)
+        self.connection_mode_box.setCurrentIndex(max(0,self.connection_mode_box.findData(defaults.get('connection_mode','automatic'))));side.addWidget(self.connection_mode_box)
+        self.fields['lan_host']=QtWidgets.QLineEdit(defaults.get('lan_host',''));self.fields['lan_host'].setPlaceholderText('热点地址（留空自动发现 如192.168.137.1:8768）');self.fields['lan_host'].setAccessibleName('中枢热点或局域网地址');side.addWidget(self.fields['lan_host'])
+        self.connection_mode_box.currentIndexChanged.connect(self._on_connection_mode_changed)
+        self.fields['lan_host'].editingFinished.connect(self._on_connection_mode_changed)
         side.addWidget(label('公网连接路径','eyebrow'));self.proxy_mode=QtWidgets.QComboBox()
         for title,value in [('自动选择','auto'),('直接连接','direct'),('系统代理','system'),('手动HTTP代理','manual')]:self.proxy_mode.addItem(title,value)
         self.proxy_mode.setCurrentIndex(max(0,self.proxy_mode.findData(defaults.get('proxy_mode','auto'))));side.addWidget(self.proxy_mode)
@@ -220,21 +272,52 @@ class Workbench(QtWidgets.QMainWindow):
         self.channel_page.currentIndexChanged.connect(self._wave_options);self.scale.currentIndexChanged.connect(self._wave_options)
         self.freeze.toggled.connect(self._freeze);self.reduce.toggled.connect(self._reduced);body.addWidget(panel,3)
         lower=QtWidgets.QHBoxLayout();lower.setSpacing(14)
-        feedback=QtWidgets.QFrame();feedback.setObjectName('panel');feedback.setMinimumWidth(250);feedback.setMaximumWidth(365);feedback_box=QtWidgets.QVBoxLayout(feedback);feedback_box.setContentsMargins(17,16,17,16);feedback_box.addWidget(label('中枢回传','heading'));feedback_box.addWidget(label('来自实际连接的状态，不作本地推断','small'))
+        self.capture_panel=QtWidgets.QFrame();self.capture_panel.setObjectName('panel');self.capture_panel.setMinimumWidth(330)
+        cap_box=QtWidgets.QVBoxLayout(self.capture_panel);cap_box.setContentsMargins(16,14,16,12);cap_box.setSpacing(8)
+        cap_head=QtWidgets.QHBoxLayout();cap_titles=QtWidgets.QVBoxLayout();cap_titles.setSpacing(2)
+        cap_titles.addWidget(label('自主采集打标','heading'));cap_titles.addWidget(label('按住持续记为一个标注期间，松开为未标注','small'))
+        cap_head.addLayout(cap_titles);cap_head.addStretch();self.capture_tag=label('本地+中枢同步','pill');cap_head.addWidget(self.capture_tag);cap_box.addLayout(cap_head)
+        cap_actions=QtWidgets.QHBoxLayout();cap_actions.setSpacing(8)
+        self.capture_start_button=MotionButton('开始自主采集',True);self.capture_start_button.setObjectName('captureStart')
+        self.capture_stop_button=MotionButton('停止并保存');self.capture_stop_button.setObjectName('captureStop');self.capture_stop_button.setEnabled(False)
+        self.capture_combos=QtWidgets.QCheckBox('加入转向组合');self.capture_combos.setObjectName('captureCombos')
+        self.capture_start_button.clicked.connect(self.start_capture);self.capture_stop_button.clicked.connect(self.stop_capture)
+        self.capture_combos.toggled.connect(self.refresh_capture_ui)
+        cap_actions.addWidget(self.capture_start_button);cap_actions.addWidget(self.capture_stop_button);cap_actions.addWidget(self.capture_combos);cap_actions.addStretch()
+        cap_box.addLayout(cap_actions)
+        self.capture_grid_widget=QtWidgets.QWidget();self.capture_grid_widget.setObjectName('capturePad')
+        self.capture_grid=QtWidgets.QGridLayout(self.capture_grid_widget);self.capture_grid.setContentsMargins(6,4,6,4);self.capture_grid.setSpacing(10)
+        positions={'FORWARD':(0,1),'LEFT':(1,0),'REST':(1,1),'RIGHT':(1,2),'BACKWARD':(2,1),'FORWARD_LEFT':(0,0),'FORWARD_RIGHT':(0,2),'BACKWARD_LEFT':(2,0),'BACKWARD_RIGHT':(2,2)}
+        self.capture_buttons={}
+        for act_label,(r_idx,c_idx) in positions.items():
+            btn=CaptureKey(act_label,CAPTURE_NAMES[act_label],diagonal='_' in act_label)
+            btn.pressed_hold.connect(lambda lbl=act_label:self.press_capture_hold(lbl,'desktop_pointer'))
+            btn.released_hold.connect(lambda lbl=act_label:self.release_capture_hold(lbl,'desktop_pointer'))
+            self.capture_grid.addWidget(btn,r_idx,c_idx);self.capture_buttons[act_label]=btn
+        cap_box.addWidget(self.capture_grid_widget,1)
+        self.capture_state=label('尚未开始','captureState');self.capture_state.setAlignment(QtCore.Qt.AlignCenter);self.capture_state.setWordWrap(True);cap_box.addWidget(self.capture_state)
+        self.capture_hint=label('按住才标注，松开为未标注；需要静止数据请按中央“静止”。也可按方向键／空格，Esc 保存退出。','captureHint')
+        self.capture_hint.setAlignment(QtCore.Qt.AlignCenter);self.capture_hint.setWordWrap(True);cap_box.addWidget(self.capture_hint)
+        self.capture_detail=label('电脑和 VR 共用采集服务，同时只允许一个会话。按键操作本身可能产生动作伪迹。','captureDetail')
+        self.capture_detail.setAlignment(QtCore.Qt.AlignCenter);self.capture_detail.setWordWrap(True);cap_box.addWidget(self.capture_detail)
+        lower.addWidget(self.capture_panel,2)
+        feedback=QtWidgets.QFrame();feedback.setObjectName('panel');feedback.setMinimumWidth(235);feedback.setMaximumWidth(350);feedback_box=QtWidgets.QVBoxLayout(feedback);feedback_box.setContentsMargins(17,16,17,16);feedback_box.addWidget(label('中枢回传','heading'));feedback_box.addWidget(label('来自实际连接的状态，不作本地推断','small'))
         self.feedback_labels={}
         for key,title in [('transport','传输连接'),('cloud','云端保存'),('durable','中枢保存'),('record','主动记录'),('label','当前标签'),('vr','VR回传'),('motion','模型执行')]:
             r=QtWidgets.QHBoxLayout();r.addWidget(label(title,'muted'));r.addStretch();v=label('等待回传');v.setWordWrap(True);self.feedback_labels[key]=v;r.addWidget(v);feedback_box.addLayout(r)
         lower.addWidget(feedback,1)
         logs=QtWidgets.QFrame();logs.setObjectName('panel');log_layout=QtWidgets.QVBoxLayout(logs);log_layout.setContentsMargins(15,13,15,10);line=QtWidgets.QHBoxLayout();line.addWidget(label('分项事件日志','heading'));line.addStretch()
-        self.filter=QtWidgets.QComboBox();self.filter.addItems(['全部','采集','写盘','中枢','校验','异常']);self.filter.currentTextChanged.connect(self.render_logs);line.addWidget(self.filter)
+        self.filter=QtWidgets.QComboBox();self.filter.addItems(['全部','采集','写盘','标签','热点直连','中枢','校验','异常']);self.filter.currentTextChanged.connect(self.render_logs);line.addWidget(self.filter)
         export=MotionButton('导出日志');export.setMinimumHeight(30);export.clicked.connect(self.export_logs);line.addWidget(export);log_layout.addLayout(line)
         self.log_view=QtWidgets.QTextBrowser();self.log_view.setOpenExternalLinks(False);self.log_view.setMinimumHeight(150);self.log_view.document().setMaximumBlockCount(600);log_layout.addWidget(self.log_view);lower.addWidget(logs,2);body.addLayout(lower,2)
         self.path_label=label('保存位置将在接收开始后显示','small');self.path_label.setTextInteractionFlags(QtCore.Qt.TextSelectableByMouse);body.addWidget(self.path_label)
         side_area=QtWidgets.QScrollArea();side_area.setWidgetResizable(True);side_area.setFixedWidth(281);side_area.setWidget(sidebar)
         self.side_area=side_area;self.sidebar=sidebar
         layout.addWidget(side_area);layout.addWidget(area,1);self.setStyleSheet(STYLE)
+        self.capture_key_held=None;self.last_capture_heartbeat=0.0
         self.timer=QtCore.QTimer(self);self.timer.setInterval(200);self.timer.timeout.connect(self.refresh);self.timer.start()
         self.preview_timer=QtCore.QTimer(self);self.preview_timer.setInterval(100);self.preview_timer.timeout.connect(self.refresh_preview);self.preview_timer.start()
+        self.capture_timer=QtCore.QTimer(self);self.capture_timer.setInterval(100);self.capture_timer.timeout.connect(self._tick_capture);self.capture_timer.start()
         self.pairing_timer=QtCore.QTimer(self);self.pairing_timer.setSingleShot(True);self.pairing_timer.setInterval(250);self.pairing_timer.timeout.connect(self.update_pairing_status)
         self.events.add('校验','INFO',f'采集端 v{__version__} 已就绪。设备类型固定为EEG采集端，中枢自动归属；本机EEG发现单独查询GDS。');self.update_pairing_status();self.refresh()
         self.update_apply=None
@@ -250,7 +333,13 @@ class Workbench(QtWidgets.QMainWindow):
         compact=self.width()<1250;columns=2 if compact else 4
         self.side_area.setFixedWidth(243 if compact else 281);self.sidebar.setFixedWidth(236 if compact else 274)
         for i,card in enumerate(self.metric_cards):self.metrics_grid.addWidget(card,i//columns,i%columns)
-    def profile(self):return dict({k:f.text().strip() for k,f in self.fields.items()},pairing_path=str(self.identity_path),proxy_mode=self.proxy_mode.currentData(),connection_mode='automatic')
+    def profile(self):return dict({k:f.text().strip() for k,f in self.fields.items()},pairing_path=str(self.identity_path),proxy_mode=self.proxy_mode.currentData(),connection_mode=self.connection_mode_box.currentData() if hasattr(self,'connection_mode_box') else 'automatic')
+    def _on_connection_mode_changed(self,*_):
+        if self.status_link:
+            try:self.status_link.stop()
+            except Exception:pass
+            self.status_link=None
+        self.save_profile();self.update_pairing_status()
     def update_idle(self):
         hub=getattr(self,'update_hub',{})
         return not self.controller.running and self.recovery is None and not self.busy and time.monotonic()-getattr(self,'update_hub_at',0)<5 and not hub.get('recording_active',True) and hub.get('motion_state')=='STOP'
@@ -336,6 +425,27 @@ class Workbench(QtWidgets.QMainWindow):
                 self._enrollment_status(state,value);self.events.add('中枢','WARN' if state in ('role_occupied','cancelled') else 'ERROR',self.pairing_help.text())
     def update_pairing_status(self,report_error=False):
         self.pairing_timer.stop()
+        mode=self.connection_mode_box.currentData() if hasattr(self,'connection_mode_box') else 'automatic'
+        lan_hint=self.fields['lan_host'].text().strip() if 'lan_host' in self.fields else ''
+        if mode in ('lan_ws','auto_lan_first'):
+            from .lan_client import build_lan_enrollment,discover_lan_hub
+            saved_agent=None
+            if self.identity_path.is_file():
+                try:saved_agent=json.loads(self.identity_path.read_text('utf-8')).get('agent_id')
+                except Exception:pass
+            if mode=='lan_ws':
+                enrollment=build_lan_enrollment(lan_hint,agent_id=saved_agent)
+                endpoint=f"{enrollment['host']}:{enrollment['port']}"
+                self.pairing_status.setText(f"中枢热点／局域网目标  {endpoint}  · WebSocket 直连已就绪")
+                self.pairing_help.setText('本机连接中枢热点或同一局域网后，通过 WebSocket 直连传输（不经过公网，稳定不断链）。')
+                self.update_enrollment=dict(enrollment);return enrollment
+            found=discover_lan_hub(lan_hint,timeout=0.35)
+            if found:
+                enrollment=build_lan_enrollment(f"{found['host']}:{found['port']}",agent_id=saved_agent)
+                endpoint=f"{enrollment['host']}:{enrollment['port']}"
+                self.pairing_status.setText(f"已自动发现中枢热点／局域网  {endpoint}  · WebSocket 直连")
+                self.pairing_help.setText('已自动匹配中枢热点／局域网 WebSocket 通道；若热点断开将自动回退公网中转。')
+                self.update_enrollment=dict(enrollment);return enrollment
         if self.automatic_connection() and not self.identity_path.is_file():
             self.update_enrollment=None;self.update_hub_at=0
             self._enrollment_status(self.enrollment_state,self.enrollment_message)
@@ -347,7 +457,7 @@ class Workbench(QtWidgets.QMainWindow):
             self.pairing_status.setText('中枢目标  '+endpoint+('  · EEG身份已就绪' if self.automatic_connection() else '  · 局域网兼容身份有效'))
             if enrollment.get('mode')=='relay':
                 enrollment.update(proxy_mode=self.proxy_mode.currentData(),proxy_url=self.fields['proxy_url'].text().strip())
-                self.pairing_help.setText('公网转发 · 应用专用CA · 需要本机中枢回包才算测试成功。')
+                self.pairing_help.setText('公网转发 · 应用专用CA · 需要本机中枢回包才算测试成功（也可在左侧切换为中枢热点 WebSocket 直连）。')
             else:self.pairing_help.setText('证书指纹 '+enrollment['certificate_sha256'][:16]+'… · 点击“连接中枢”验证实际回包。')
             self.update_enrollment=dict(enrollment);return enrollment
         except ValueError as error:
@@ -407,17 +517,170 @@ class Workbench(QtWidgets.QMainWindow):
         self.last_probe=result;self.probed_at=time.monotonic();self.events.add('校验','INFO',f"中枢连接测试完成，耗时 {result['elapsed_ms']}ms；状态连接继续保持，未访问设备")
     def begin(self):
         if self.recovery:self.events.add('校验','WARN','正在补传历史记录，请等待完成后开始实时接收');return
-        if self.update_pairing_status(report_error=not self.automatic_connection()) is None:
+        enrollment=self.update_pairing_status(report_error=not self.automatic_connection())
+        if enrollment is None:
             if self.automatic_connection():self.start_enrollment(self.begin)
             return
         try:
-            profile=self.profile();self.settings.save(profile);self.last_collector_seq=0;self.last_preview=None
+            profile=self.profile();self.settings.save(profile);profile['enrollment']=dict(enrollment);self.last_collector_seq=0;self.last_preview=None
             def receive():
                 if self.status_link:self.status_link.stop();self.status_link=None
                 self.controller.begin(profile)
             self.task(receive)
         except BaseException as error:self.events.add('校验','ERROR',str(error))
-    def stop(self):self.events.add('采集','INFO','正在排空尾块并结束自身接收…');self.task(self.controller.stop)
+    def stop(self):
+        if self._capture_snapshot().get('active'):
+            try:self.stop_capture()
+            except BaseException:pass
+        self.events.add('采集','INFO','正在排空尾块并结束自身接收…');self.task(self.controller.stop)
+    def _capture_snapshot(self):
+        collector=getattr(self.controller,'collector',None)
+        if collector and hasattr(collector,'capture_snapshot'):return collector.capture_snapshot()
+        s=self.controller.snapshot()
+        return s.get('capture') or dict(active=False,held=None,events_saved=0,periods_completed=0,allow_combos=False,labels=list(CAPTURE_LABELS[:5]),instructions={l:capture_task_spec(l)['instruction'] for l in CAPTURE_LABELS})
+    def start_capture(self):
+        try:
+            if hasattr(self.controller,'start_capture'):
+                self.controller.start_capture(allow_combos=self.capture_combos.isChecked())
+            elif hasattr(getattr(self.controller,'collector',None),'start_capture'):
+                self.controller.collector.start_capture(allow_combos=self.capture_combos.isChecked())
+            else:
+                raise ValueError('请先点击“开始接收”并确认正在接收脑电数据后，再开始自主采集打标')
+            self.last_capture_heartbeat=time.monotonic()
+            self.setFocus()
+            self.refresh()
+        except BaseException as error:
+            self.events.add('标签','ERROR',str(error))
+            self.capture_state.setText(str(error))
+    def stop_capture(self):
+        try:
+            self.capture_key_held=None
+            if hasattr(self.controller,'stop_capture'):self.controller.stop_capture('completed')
+            elif hasattr(getattr(self.controller,'collector',None),'stop_capture'):self.controller.collector.stop_capture('completed')
+            self.refresh()
+        except BaseException as error:
+            self.events.add('标签','ERROR',str(error))
+    def press_capture_hold(self,action_label,pointer_source='desktop_pointer'):
+        cap=self._capture_snapshot()
+        if not cap.get('active'):return False
+        focused=bool(self.isActiveWindow() or os.environ.get('QT_QPA_PLATFORM')=='offscreen')
+        try:
+            if hasattr(self.controller,'hold_start'):self.controller.hold_start(action_label,pointer_source=pointer_source,page_active=focused)
+            elif hasattr(getattr(self.controller,'collector',None),'hold_start'):self.controller.collector.hold_start(action_label,pointer_source=pointer_source,page_active=focused)
+            self.last_capture_heartbeat=time.monotonic()
+            self.refresh_capture_ui()
+            return True
+        except BaseException as error:
+            self.events.add('标签','WARN',str(error));return False
+    def release_capture_hold(self,action_label=None,pointer_source=None,*,page_active=True):
+        cap=self._capture_snapshot()
+        if not cap.get('active') or not cap.get('held'):return False
+        try:
+            if hasattr(self.controller,'hold_end'):self.controller.hold_end(action_label,pointer_source=pointer_source,page_active=page_active)
+            elif hasattr(getattr(self.controller,'collector',None),'hold_end'):self.controller.collector.hold_end(action_label,pointer_source=pointer_source,page_active=page_active)
+            self.last_capture_heartbeat=time.monotonic()
+            self.refresh_capture_ui()
+            return True
+        except BaseException as error:
+            self.events.add('标签','WARN',str(error));return False
+    def _tick_capture(self):
+        cap=self._capture_snapshot()
+        if not cap.get('active'):return
+        focused=bool(self.isActiveWindow() or os.environ.get('QT_QPA_PLATFORM')=='offscreen')
+        if not focused and cap.get('held'):
+            self.capture_key_held=None
+            self.release_capture_hold(page_active=False)
+            return
+        now=time.monotonic()
+        if now-self.last_capture_heartbeat>=.3:
+            self.last_capture_heartbeat=now
+            try:
+                if hasattr(self.controller,'capture_heartbeat'):self.controller.capture_heartbeat(page_active=focused)
+                elif hasattr(getattr(self.controller,'collector',None),'capture_heartbeat'):self.controller.collector.capture_heartbeat(page_active=focused)
+            except BaseException:pass
+        if cap.get('held'):
+            self.refresh_capture_ui()
+    def refresh_capture_ui(self,s=None,hub=None):
+        if not isinstance(s,dict):s=self.controller.snapshot()
+        if not isinstance(hub,dict):
+            net=s.get('network') or {}
+            hub=net.get('hub') or {}
+        cap=s.get('capture') or self._capture_snapshot()
+        receiving=bool(self.controller.running and s.get('state')=='receiving')
+        active=bool(cap.get('active') and receiving)
+        remote_active=bool(hub.get('recording_active') and hub.get('phase') not in (None,'idle','completed','aborted') and not active)
+        show_combos=bool(self.capture_combos.isChecked() if not active else cap.get('allow_combos'))
+        self.capture_start_button.setEnabled(receiving and not active and not self.busy and not remote_active)
+        self.capture_stop_button.setEnabled(active and not self.busy)
+        self.capture_combos.setEnabled(not active and not self.busy)
+        allowed=set(cap.get('labels') or (CAPTURE_LABELS if show_combos else CAPTURE_LABELS[:5]))
+        held=cap.get('held') if active else None
+        instructions=cap.get('instructions') or {}
+        for act_label,btn in self.capture_buttons.items():
+            is_diag='_' in act_label
+            visible=(not is_diag) or show_combos
+            btn.setVisible(visible)
+            btn.setEnabled(active and (act_label in allowed))
+            btn.set_held(held==act_label)
+            tip=instructions.get(act_label) or ('按住标注'+CAPTURE_NAMES.get(act_label,act_label))
+            btn.setToolTip(tip)
+        if cap.get('error'):
+            self.capture_state.setText(str(cap['error']))
+        elif active:
+            if held:
+                dur=cap.get('held_duration_s',0.0)
+                state_txt=f"正在标注：{CAPTURE_NAMES.get(held,held)} · 持续 {dur:.1f}s · 已记录 {cap.get('events_saved',0)} 个事件"
+            else:
+                state_txt=f"松开 · 未标注 · 已完成 {cap.get('periods_completed',0)} 个期间／{cap.get('events_saved',0)} 个事件"
+            if cap.get('hub_synced'):
+                state_txt+=f"（中枢已确认 {cap.get('hub_ack_seq',0)}）"
+            self.capture_state.setText(state_txt)
+        elif remote_active:
+            self.capture_state.setText('已有中枢／VR 会话正在采集，请先结束该会话')
+        elif cap.get('last_recording'):
+            self.capture_state.setText(f"已保存：{cap['last_recording']}（共 {cap.get('periods_completed',0)} 个期间／{cap.get('events_saved',0)} 个事件）")
+        elif not receiving:
+            self.capture_state.setText('请先开始接收脑电数据，随后即可开始自主采集打标')
+        else:
+            self.capture_state.setText('尚未开始')
+        if active:
+            inst=instructions.get(held) if held else '以第一人称想象自己行走或转向，运动想象为主；是否配合眼动以当前任务说明为准。可正常操作手柄。'
+            self.capture_hint.setText(inst+' 按住才标注，松开为未标注。')
+            sync_note=(f"中枢同步记录 {cap.get('hub_recording') or '进行中'}" if cap.get('hub_synced') else '本地 events.jsonl 实时持久化（待中枢连接或回执）')
+            self.capture_detail.setText(f"会话 {str(cap.get('session_id',''))[:8]} · {sync_note} · 松开立即恢复 UNKNOWN（绝不归为静止）")
+        else:
+            self.capture_hint.setText('按住才标注，松开为未标注；明确无导航意图请按中央“静止”。方向键／空格长按标注，Esc 保存退出。')
+            self.capture_detail.setText('采集端与中枢样式及事件格式完全统一，长按持续为一个期间，松开即结束该期间。')
+    def keyPressEvent(self,event):
+        keys={QtCore.Qt.Key_Up:'FORWARD',QtCore.Qt.Key_Down:'BACKWARD',QtCore.Qt.Key_Left:'LEFT',QtCore.Qt.Key_Right:'RIGHT',QtCore.Qt.Key_Space:'REST'}
+        cap=self._capture_snapshot()
+        focused_widget=QtWidgets.QApplication.focusWidget()
+        in_input=isinstance(focused_widget,(QtWidgets.QLineEdit,QtWidgets.QComboBox))
+        if cap.get('active') and not in_input:
+            if event.key()==QtCore.Qt.Key_Escape and not event.isAutoRepeat():
+                event.accept();self.stop_capture();return
+            if event.key() in keys and not event.isAutoRepeat():
+                event.accept()
+                lbl=keys[event.key()]
+                self.capture_key_held=lbl
+                self.press_capture_hold(lbl,'desktop_keyboard')
+                return
+        super().keyPressEvent(event)
+    def keyReleaseEvent(self,event):
+        keys={QtCore.Qt.Key_Up:'FORWARD',QtCore.Qt.Key_Down:'BACKWARD',QtCore.Qt.Key_Left:'LEFT',QtCore.Qt.Key_Right:'RIGHT',QtCore.Qt.Key_Space:'REST'}
+        if event.key() in keys and not event.isAutoRepeat():
+            lbl=keys[event.key()]
+            if self.capture_key_held==lbl or self._capture_snapshot().get('held')==lbl:
+                self.capture_key_held=None
+                event.accept()
+                self.release_capture_hold(lbl,'desktop_keyboard')
+                return
+        super().keyReleaseEvent(event)
+    def changeEvent(self,event):
+        if event.type()==QtCore.QEvent.ActivationChange and not self.isActiveWindow() and os.environ.get('QT_QPA_PLATFORM')!='offscreen':
+            self.capture_key_held=None
+            self.release_capture_hold(page_active=False)
+        super().changeEvent(event)
     def recover(self):
         if self.controller.running or self.recovery:self.events.add('校验','WARN','请先结束当前接收／补传');return
         enrollment=self.update_pairing_status(report_error=not self.automatic_connection())
@@ -491,9 +754,10 @@ class Workbench(QtWidgets.QMainWindow):
         for field in self.fields.values():field.setEnabled(not self.controller.running and not self.busy)
         states={'idle':'尚未开始','starting':'连接共享会话','receiving':'正在接收','stopped':'已保存并结束','closed':'已关闭','error':'需要检查'}
         self.badge.setText('处理中…' if self.busy else states.get(s.get('state'),str(s.get('state','未知'))))
-        self.status_text.setText(('中枢在线 · EEG尚未开始接收' if network.get('status_only') else '公网已认证 · 中枢在线') if network.get('hub_online') else '公网已认证 · 中枢回包未确认' if network.get('transport')=='public_relay' and network.get('connected') else '本地优先保存 · 中枢已连接' if network.get('connected') else '本地记录不依赖网络' if self.controller.running else '等待原厂共享会话')
+        self.status_text.setText(('中枢在线 · EEG尚未开始接收' if network.get('status_only') else ('热点WebSocket直连 · 中枢在线' if network.get('transport')=='lan_ws' else '公网已认证 · 中枢在线')) if network.get('hub_online') else '公网已认证 · 中枢回包未确认' if network.get('transport')=='public_relay' and network.get('connected') else '本地优先保存 · 中枢已连接' if network.get('connected') else '本地记录不依赖网络' if self.controller.running else '等待原厂共享会话')
         if not self.controller.running and self.enrollment_state in ('connecting','waiting_hub','role_occupied'):self.status_text.setText(self.pairing_status.text())
         self.proxy_mode.setEnabled(not self.controller.running and not self.busy)
+        if hasattr(self,'connection_mode_box'):self.connection_mode_box.setEnabled(not self.controller.running and not self.busy)
         self.saved.set(f"{s.get('samples',0):,}");self.rate.set(d.get('sampling_rate','—'),f"{len(d.get('channels',[]))}列 · 原厂当前配置" if d else '读取实际配置，不设定采样率')
         self.backlog.set(network.get('backlog',0));self.confirmed.set(network.get('durable_seq',0))
         if d and d.get('stream_id')!=self.last_descriptor:
@@ -510,14 +774,17 @@ class Workbench(QtWidgets.QMainWindow):
         hub=network.get('hub') if network.get('connected') else getattr(self,'last_probe',{}).get('hub') if time.monotonic()-getattr(self,'probed_at',0)<5 else {}
         hub=hub or {}
         if network.get('transport')=='public_relay' and not network.get('hub_state_fresh'):hub={}
-        self.feedback_labels['transport'].setText(('公网与中枢已确认' if network.get('hub_online') else '公网已认证 · 中枢未确认') if network.get('transport')=='public_relay' and network.get('connected') else '已认证连接' if network.get('connected') else '上次测试通过 · 快照' if hub else '等待连接')
-        self.feedback_labels['cloud'].setText('尚未采集EEG' if network.get('status_only') else ('本连接确认 '+str(network.get('cloud_blocks',0))+' 块') if network.get('transport')=='public_relay' else '局域网直连' if network.get('connected') else '等待连接')
+        self.feedback_labels['transport'].setText('热点WebSocket已确认' if network.get('transport')=='lan_ws' and network.get('connected') else ('公网与中枢已确认' if network.get('hub_online') else '公网已认证 · 中枢未确认') if network.get('transport')=='public_relay' and network.get('connected') else '已认证连接' if network.get('connected') else '上次测试通过 · 快照' if hub else '等待连接')
+        self.feedback_labels['cloud'].setText('热点/局域网直连' if network.get('transport')=='lan_ws' and network.get('connected') else '尚未采集EEG' if network.get('status_only') else ('本连接确认 '+str(network.get('cloud_blocks',0))+' 块') if network.get('transport')=='public_relay' else '局域网直连' if network.get('connected') else '等待连接')
         self.feedback_labels['durable'].setText('尚未采集EEG' if network.get('status_only') else '连续前缀 '+str(network.get('durable_seq',0))+' 块' if network.get('connected') else '等待持久化确认')
         self.feedback_labels['record'].setText(('记录中 · '+str(hub.get('recording_samples',0))+'行') if hub.get('recording_active') else '未开始' if hub else '等待回传')
-        names={'REST':'静止指令','FORWARD':'向前','BACKWARD':'向后','LEFT':'向左','RIGHT':'向右'}
-        self.feedback_labels['label'].setText(names.get(hub.get('label'),hub.get('label') or '未标注') if hub else '等待回传')
+        names={'REST':'静止指令','FORWARD':'向前','BACKWARD':'向后','LEFT':'向左','RIGHT':'向右','FORWARD_LEFT':'前进左转','FORWARD_RIGHT':'前进右转','BACKWARD_LEFT':'后退左转','BACKWARD_RIGHT':'后退右转'}
+        cap_state=s.get('capture') or self._capture_snapshot()
+        active_label=hub.get('label') if hub else (cap_state.get('held') if cap_state.get('active') else None)
+        self.feedback_labels['label'].setText(names.get(active_label,active_label or '未标注') if (hub or cap_state.get('active')) else '等待回传')
         self.feedback_labels['vr'].setText(str(hub.get('vr_online',0))+'个在线' if hub else '等待回传')
         self.feedback_labels['motion'].setText(str(hub.get('motion_state','未知'))+' · '+('模型未配置' if hub.get('model_state')=='not_configured' else str(hub.get('model_state','未知'))) if hub else '等待回传')
+        self.refresh_capture_ui(s,hub)
         if self.recovery:
             recovery=self.recovery.snapshot();self.backlog.set(recovery['backlog'],'历史补传，不进入实时控制')
             if recovery['connected'] and recovery['backlog']==0:
@@ -566,7 +833,7 @@ class Workbench(QtWidgets.QMainWindow):
             self.task(finish);return
         if hasattr(self,'updater'):self.updater.stop()
         if self.status_link:threading.Thread(target=self.status_link.stop,daemon=True).start()
-        self.timer.stop();self.preview_timer.stop();self.pairing_timer.stop();self.wave.timer.stop();event.accept()
+        self.timer.stop();self.preview_timer.stop();self.capture_timer.stop();self.pairing_timer.stop();self.wave.timer.stop();event.accept()
 
 
 def run(*,start_receiving=False,status_path=None):

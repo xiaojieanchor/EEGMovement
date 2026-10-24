@@ -17,7 +17,7 @@ def main():
     command=[sys.executable,'-X','utf8','-m','PyInstaller','--clean','--noconfirm','--onedir','--windowed','--name','EEGMovement-gNautilus','--paths','.',
         '--distpath','outputs/gnautilus_release','--workpath','outputs/gnautilus_build','--specpath','outputs/gnautilus_build',
         '--hidden-import','win32serviceutil','--hidden-import','win32service','--hidden-import','win32timezone',
-        '--hidden-import','cffi','--collect-submodules','cffi','--collect-submodules','websockets','--hidden-import','eeg_relay.endpoint','--hidden-import','gnautilus_acquisition.relay_client',
+        '--hidden-import','cffi','--collect-submodules','cffi','--collect-submodules','websockets','--hidden-import','eeg_relay.endpoint','--hidden-import','gnautilus_acquisition.relay_client','--hidden-import','gnautilus_acquisition.lan_client',
         '--add-data',str(ROOT/'gnautilus_acquisition/relay_public.json')+';gnautilus_acquisition','--exclude-module','matplotlib','--exclude-module','scipy',
         '--exclude-module','torch','--exclude-module','pandas','scripts/gnautilus_entry.py']
     # Some bundled Python distributions load this public distrust resource in

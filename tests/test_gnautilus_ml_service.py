@@ -23,7 +23,7 @@ def test_cnn_export_roundtrip_synthetic(tmp_path):
     from tests.test_gnautilus_ml_v1 import trials
     from gnautilus_ml.algorithms import Classifier
     from gnautilus_ml.artifacts import save_artifact,load_artifact
-    import torch
+    torch=pytest.importorskip('torch')
     torch.set_num_threads(2);x,y,g,c,fs=trials()
     with patch('gnautilus_ml.algorithms.authorize_training'),patch('gnautilus_ml.algorithms.compute_device',return_value='cpu'):
         m=Classifier('cnn_gru',c,fs,max_epochs=2).fit(x[:40],y[:40],g[:40])

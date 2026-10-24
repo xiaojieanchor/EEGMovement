@@ -22,6 +22,8 @@ def load_enrollment(path):
     if len(content)>8192:raise ValueError('配对文件过大：请选择中枢生成的配对JSON，不是事件日志或设备配置。')
     try:d=json.loads(content.decode('utf-8-sig'))
     except (UnicodeError,json.JSONDecodeError):raise ValueError('配对文件不是有效的UTF-8 JSON：请从中枢重新生成并复制，勿手工填写密钥。') from None
+    if isinstance(d,dict) and d.get('schema')=='gnautilus.enrollment.lan.v1' and d.get('mode')=='lan_ws':
+        return d
     if isinstance(d,dict) and d.get('schema')=='gnautilus.enrollment.v2' and d.get('mode')=='relay':
         from urllib.parse import urlparse
         u=urlparse(d.get('url',''))
@@ -42,21 +44,28 @@ def load_enrollment(path):
 
 
 class SettingsStore:
-    FIELDS={'sdk_dir','serial','pairing_path','storage_root','layout_path','proxy_mode','proxy_url','connection_mode'}
+    FIELDS={'sdk_dir','serial','pairing_path','storage_root','layout_path','proxy_mode','proxy_url','connection_mode','lan_host'}
     def __init__(self,path):self.path=Path(path)
     def load(self):
         if not self.path.exists():return {}
         d=json.loads(self.path.read_text('utf-8'))
         if not isinstance(d,dict):raise ValueError('界面设置应为对象')
         return {k:v for k,v in d.items() if k in self.FIELDS and isinstance(v,str)}
-    def save(self,value):atomic_json(self.path,{k:v for k,v in value.items() if k in self.FIELDS})
+    def save(self,value):atomic_json(self.path,{k:v for k,v in value.items() if k in self.FIELDS and isinstance(v,str)})
 
 
 class AcquisitionController:
     def __init__(self,collector_factory=None):self.collector_factory=collector_factory;self.collector=None;self.running=False
     def begin(self,profile):
         if self.running:raise ValueError('正在接收，请先结束并保存')
-        pairing=load_enrollment(profile['pairing_path']);layout={}
+        if isinstance(profile.get('enrollment'),dict):
+            pairing=dict(profile['enrollment'])
+        elif profile.get('connection_mode')=='lan_ws':
+            from .lan_client import build_lan_enrollment
+            pairing=build_lan_enrollment(profile.get('lan_host',''))
+        else:
+            pairing=load_enrollment(profile['pairing_path'])
+        layout={}
         if pairing.get('mode')=='relay':pairing.update(proxy_mode=profile.get('proxy_mode','auto'),proxy_url=profile.get('proxy_url',''))
         if profile.get('layout_path'):
             p=Path(profile['layout_path'])
@@ -74,6 +83,21 @@ class AcquisitionController:
             self.collector.stop()
             if self.collector.snapshot().get('supervisor_active'):raise RuntimeError('尾块仍在关闭，请等待后重试；当前记录尚未声明关闭完成')
             self.running=False
+    def start_capture(self,**kw):
+        if not self.collector or not hasattr(self.collector,'start_capture'):raise ValueError('请先开始接收 EEG 数据后再启动自主打标')
+        return self.collector.start_capture(**kw)
+    def hold_start(self,label,**kw):
+        if not self.collector or not hasattr(self.collector,'hold_start'):return {}
+        return self.collector.hold_start(label,**kw)
+    def hold_end(self,label=None,**kw):
+        if not self.collector or not hasattr(self.collector,'hold_end'):return {}
+        return self.collector.hold_end(label,**kw)
+    def capture_heartbeat(self,**kw):
+        if not self.collector or not hasattr(self.collector,'capture_heartbeat'):return {}
+        return self.collector.capture_heartbeat(**kw)
+    def stop_capture(self,reason='completed'):
+        if not self.collector or not hasattr(self.collector,'stop_capture'):return {}
+        return self.collector.stop_capture(reason=reason)
     def snapshot(self):return self.collector.snapshot() if self.collector else dict(state='idle',error=None,samples=0,blocks=0,network={},descriptor=None)
 
 

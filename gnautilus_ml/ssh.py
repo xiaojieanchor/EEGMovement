@@ -45,7 +45,9 @@ class HostKey(paramiko.MissingHostKeyPolicy):
 
 class ComputeBridge:
     def __init__(self,root,event=lambda *a:None):
-        self.root=Path(root);self.profile=read_json(self.root/'configs/gnautilus_compute.json');self.event=event;self.client=None;self.password=None;self.token=None;self.lock=threading.RLock()
+        self.root=Path(root);cfg=self.root/'configs/gnautilus_compute.json'
+        if not cfg.exists() and (self.root/'configs/gnautilus_compute.example.json').exists():cfg=self.root/'configs/gnautilus_compute.example.json'
+        self.profile=read_json(cfg);self.event=event;self.client=None;self.password=None;self.token=None;self.lock=threading.RLock()
         self.status=dict(ssh_connected=False,worker_connected=False,connecting=False,host=self.profile['host'],ssh_port=self.profile['port'],last_error=None,last_health=None,last_health_time=None,runtime=None,roundtrip_ms=None)
     def connect(self,password):
         with self.lock:

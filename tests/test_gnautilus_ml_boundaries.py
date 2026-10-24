@@ -29,7 +29,7 @@ def test_checkpoint_interrupted_receipt_preserves_previous_commit(tmp_path):
     from gnautilus_ml.network import fit_network
     from tests.test_gnautilus_ml_v1 import trials
     from gnautilus_ml.common import read_json
-    import torch
+    torch=pytest.importorskip('torch')
     torch.set_num_threads(2);x,y,_,_,_=trials();x=x[:40];y=y[:40];cp=tmp_path/'latest.pt'
     fit_network(x,y,np.unique(y),17,1,'cpu',None,cp)
     before=read_json(cp.with_suffix('.json'))

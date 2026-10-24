@@ -6,7 +6,7 @@ MAX_HEADER=65536
 MAX_BODY=4*1024*1024
 HEX32=re.compile(r'^[0-9a-f]{32}$')
 HEX64=re.compile(r'^[0-9a-f]{64}$')
-KINDS={'eeg_block','eeg_status','hub_ack','hub_reject','hub_status','rpc','rpc_reply','vr_wire','quest_event','event_ack','preview','clock','clock_reply','update_state'}
+KINDS={'eeg_block','eeg_status','eeg_event','hub_ack','hub_reject','hub_status','rpc','rpc_reply','vr_wire','quest_event','event_ack','preview','clock','clock_reply','update_state'}
 FIELDS=('workspace','from','to','boot','seq','kind','stream','epoch','block_seq','digest')
 
 def encoded(value):

@@ -54,6 +54,7 @@ def test_missing_training_authority_still_rejects():
 
 
 def test_baseline_neural_export_and_rejection_keeps_native_label(tmp_path):
+    pytest.importorskip('torch')
     x,y,g=fixture();events=[]
     with patch('gnautilus_ml.algorithms.authorize_training'),patch('gnautilus_ml.algorithms.compute_device',return_value='cpu'):
         model=Classifier('cnn_gru_baseline',['C3','Cz','C4','Pz'],200,.75,max_epochs=2).fit(x,y,g,progress=events.append,validation=(x,y,g))

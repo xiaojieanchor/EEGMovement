@@ -42,15 +42,23 @@ def discover_devices(settings,timeout=5,reader_factory=ParticipantReader):
 
 def _run_worker(connection, stop_event, settings, reader_factory):
     reader = None
+    timer_set = False
+    if __import__('os').name == 'nt':
+        try:
+            __import__('ctypes').windll.winmm.timeBeginPeriod(1)
+            timer_set = True
+        except Exception:
+            pass
     try:
         reader = reader_factory(**settings)
         descriptor = reader.open()
         connection.send({'kind': 'descriptor', 'descriptor': descriptor})
-        # Poll only our participant at 80 ms when rate is known. The vendor
-        # retains every sample; a 200 ms destination capacity drains jitter
-        # without producing 31 tiny network/journal frames per second.
+        # Poll our participant with a short 15 ms cadence after non-empty reads
+        # and 4 ms after empty reads so 32 ms GDS scan batches are drained
+        # promptly without adding 80-95 ms polling lag to the freshness budget.
         rate=descriptor.get('sampling_rate')
-        interval=.08 if isinstance(rate,(int,float)) and rate>0 else .002
+        interval=.015 if isinstance(rate,(int,float)) and rate>0 else .002
+        empty_wait=.004 if isinstance(rate,(int,float)) and rate>0 else .002
         while not stop_event.is_set():
             began=time.monotonic_ns();wall_began=time.time_ns()
             samples = reader.read()
@@ -60,9 +68,9 @@ def _run_worker(connection, stop_event, settings, reader_factory):
                 connection.send({'kind': 'block', 'samples': samples,
                                  'read_monotonic_ns': began, 'utc_ns': wall_began,
                                  'read_completed_monotonic_ns':read_time,'read_completed_utc_ns':wall_time})
+                stop_event.wait(max(0.,interval-(time.monotonic_ns()-read_time)/1e9))
             else:
-                stop_event.wait(.002)
-            if len(samples):stop_event.wait(max(0.,interval-(time.monotonic_ns()-began)/1e9))
+                stop_event.wait(empty_wait)
     except BaseException as exc:
         try:
             connection.send({'kind': 'error', 'code': getattr(exc, 'code', type(exc).__name__),
@@ -70,6 +78,11 @@ def _run_worker(connection, stop_event, settings, reader_factory):
         except (BrokenPipeError, EOFError, OSError):
             pass
     finally:
+        if timer_set:
+            try:
+                __import__('ctypes').windll.winmm.timeEndPeriod(1)
+            except Exception:
+                pass
         if reader is not None:
             try:
                 reader.close()

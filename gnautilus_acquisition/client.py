@@ -20,11 +20,36 @@ from .contract import json_bytes,send_frame,recv_frame
 SDK_OPEN_TIMEOUT_SECONDS=15.
 SDK_SAMPLE_TIMEOUT_SECONDS=5.
 
+CAPTURE_LABELS=['REST','FORWARD','BACKWARD','LEFT','RIGHT','FORWARD_LEFT','FORWARD_RIGHT','BACKWARD_LEFT','BACKWARD_RIGHT']
+CAPTURE_AXES={'REST':[0,0],'FORWARD':[1,0],'BACKWARD':[2,0],'LEFT':[0,1],'RIGHT':[0,2],'FORWARD_LEFT':[1,1],'FORWARD_RIGHT':[1,2],'BACKWARD_LEFT':[2,1],'BACKWARD_RIGHT':[2,2]}
+CAPTURE_NAMES={'FORWARD':'向前','BACKWARD':'向后','LEFT':'向左','RIGHT':'向右','REST':'静止','FORWARD_LEFT':'前进左转','FORWARD_RIGHT':'前进右转','BACKWARD_LEFT':'后退左转','BACKWARD_RIGHT':'后退右转'}
+
+
+def capture_task_spec(label,mode='navigation_mi_gaze'):
+    eyes={'FORWARD':'UP','BACKWARD':'DOWN','LEFT':'LEFT','RIGHT':'RIGHT','REST':'CENTER',
+          'FORWARD_LEFT':'UP_LEFT','FORWARD_RIGHT':'UP_RIGHT','BACKWARD_LEFT':'DOWN_LEFT','BACKWARD_RIGHT':'DOWN_RIGHT'}
+    eye_cn={'UP':'向上看','DOWN':'向下看','LEFT':'向左看','RIGHT':'向右看','CENTER':'自然中央注视',
+            'UP_LEFT':'向左上看','UP_RIGHT':'向右上看','DOWN_LEFT':'向左下看','DOWN_RIGHT':'向右下看'}
+    motors={'FORWARD':('IMAGINE_WALK_FORWARD','向前行走'),'BACKWARD':('IMAGINE_WALK_BACKWARD','向后行走'),
+            'LEFT':('IMAGINE_TURN_LEFT','向左转向'),'RIGHT':('IMAGINE_TURN_RIGHT','向右转向'),'REST':('NO_NAVIGATION_IMAGERY','停止导航想象'),
+            'FORWARD_LEFT':('IMAGINE_WALK_FORWARD_LEFT','向前并向左转向'),'FORWARD_RIGHT':('IMAGINE_WALK_FORWARD_RIGHT','向前并向右转向'),
+            'BACKWARD_LEFT':('IMAGINE_WALK_BACKWARD_LEFT','向后并向左转向'),'BACKWARD_RIGHT':('IMAGINE_WALK_BACKWARD_RIGHT','向后并向右转向')}
+    eye='CENTER' if mode=='navigation_mi_only' else eyes.get(label,'UNKNOWN')
+    motor,action=motors.get(label,('UNKNOWN','未知动作'))
+    instruction=('自然中央注视，停止导航运动想象，不发出导航意图。' if label=='REST' else
+        '以第一人称想象自己'+action+'，体会身体运动感觉，不只是观看移动画面；'+
+        (eye_cn.get(eye,'自然中央注视')+'，眼动仅作辅助。' if mode=='navigation_mi_gaze' else '自然中央注视，不用定向眼动辅助。'))
+    instruction+='不指定某只手或腿的想象映射；无需真实迈步或转身，可正常操作手柄，手柄和头动单独记录。'
+    return dict(label=label,experiment_mode=mode,gaze_instruction=eye,limb_instruction='NOT_PRESCRIBED',motor_instruction=motor,
+                primary_source='motor_imagery',auxiliary_source='gaze' if mode=='navigation_mi_gaze' else 'none',
+                instruction=instruction,task_binding_version='navigation_mi_gaze_v3')
+
 
 def source_age_ms(header,rate,now_ns=None):
     """Host read age for existing freshness gates; not a hardware timestamp."""
     now_ns=time.monotonic_ns() if now_ns is None else now_ns
-    host_age=max(0.,(now_ns-header['read_monotonic_ns'])/1e6)
+    read_ns=header.get('read_completed_monotonic_ns',header['read_monotonic_ns'])
+    host_age=max(0.,(now_ns-read_ns)/1e6)
     return host_age
 
 
@@ -72,6 +97,9 @@ def probe_hub(enrollment,on_event=None,*,status_link=None):
     if enrollment.get('mode')=='relay':
         from .relay_client import probe_relay
         return probe_relay(enrollment,on_event)
+    if enrollment.get('mode')=='lan_ws':
+        from .lan_client import probe_lan
+        return probe_lan(enrollment,on_event)
     callback=on_event or (lambda *args:None);began=time.monotonic()
     s,_=connect_authenticated(enrollment,on_stage=lambda stage,message:callback('校验','INFO',stage+' · '+message))
     try:
@@ -87,18 +115,31 @@ def probe_hub(enrollment,on_event=None,*,status_link=None):
 class Replicator:
     """Read the committed local journal; only fresh new blocks use the live lane."""
     def __new__(cls,*args,**kwargs):
-        if cls is Replicator and len(args)>1 and args[1].get('mode')=='relay':
-            from .relay_client import RelayReplicator
-            return object.__new__(RelayReplicator)
+        if cls is Replicator and len(args)>1 and isinstance(args[1],dict):
+            if args[1].get('mode')=='relay':
+                from .relay_client import RelayReplicator
+                return object.__new__(RelayReplicator)
+            if args[1].get('mode')=='lan_ws':
+                from .lan_client import LanWsReplicator
+                return object.__new__(LanWsReplicator)
         return object.__new__(cls)
-    def __init__(self,journal,enrollment,backfill_only=False,on_event=None,health_provider=None):
+    def __init__(self,journal,enrollment,backfill_only=False,on_event=None,health_provider=None,on_capture_ack=None):
         self.journal,self.enrollment,self.backfill_only=journal,enrollment,backfill_only
         self.stop_event=threading.Event();self.lock=threading.RLock();self.socket=None
         self.state=dict(connected=False,durable_seq=0,backlog=0,error=None,sent_blocks=0,live_accepted=0)
         self.last_live_seq=0;self.acked=set()
         self.feedback_log=HubFeedbackLog()
         self.health_provider=health_provider
+        self.on_capture_ack=on_capture_ack or (lambda *args:None)
+        self.capture_events=queue.Queue(maxsize=256)
         self.on_event=on_event or (lambda *args:None);self.last_hub_log=0;self.last_hub_phase=None;self.last_components={}
+    def send_capture_event(self,payload):
+        try:
+            self.capture_events.put_nowait(dict(payload))
+            if hasattr(self.journal,'new_data'):self.journal.new_data.set()
+            return True
+        except queue.Full:
+            return False
     def start(self):
         self.thread=threading.Thread(target=self._run,daemon=True,name='g.Nautilus outbound TLS');self.thread.start();return self
     def snapshot(self):
@@ -117,6 +158,12 @@ class Replicator:
                 self._feedback(r)
                 self.acked.clear();self.last_live_seq=r['durable_seq'];ticket=r['ticket'];heartbeat=time.monotonic();last_health=0
                 while not self.stop_event.is_set():
+                    while not self.capture_events.empty():
+                        try:ev=self.capture_events.get_nowait()
+                        except queue.Empty:break
+                        send_frame(s,dict(kind='capture_event',event=ev));cr,_=recv_frame(s)
+                        if cr.get('kind')=='capture_ack':
+                            self._feedback(cr);ticket=cr['ticket'];heartbeat=time.monotonic()
                     if time.monotonic()-last_health>=1:
                         r=self._send_health(s);ticket=r['ticket'];heartbeat=last_health=time.monotonic()
                     with self.journal.lock:
@@ -159,6 +206,9 @@ class Replicator:
         if reply.get('kind')!='status_ok':raise ValueError('中枢健康状态回执不匹配')
         self._feedback(reply);return reply
     def _feedback(self,reply):
+        if isinstance(reply.get('capture_ack'),dict):
+            try:self.on_capture_ack(reply['capture_ack'])
+            except Exception:pass
         hub=reply.get('hub_state')
         if not isinstance(hub,dict):return
         self.feedback_log.consume(hub,self.on_event)
@@ -189,13 +239,166 @@ class Collector:
     """Supervisor drains SDK into a bounded writer queue; network reads durable files."""
     def __init__(self,settings,enrollment,storage_root,*,worker_factory=None):
         self.settings,self.enrollment,self.storage_root=settings,enrollment,Path(storage_root)
-        self.worker_factory=worker_factory;self.stop_event=threading.Event();self.lock=threading.RLock()
+        self.worker_factory=worker_factory;self.stop_event=threading.Event();self.lock=threading.RLock();self.capture_lock=threading.RLock()
         self.state=dict(state='idle',sdk_state='not_started',error=None,descriptor=None,samples=0,blocks=0,path=None,forced_termination=False)
         self.journal=self.network=self.worker=None;self.blocks=queue.Queue(maxsize=128);self.writer_error=None
         self.preview=PreviewBuffer();self.log=EventLog();self.last_disk_log=0
+        self.capture=dict(active=False,session_id=None,client_token=None,protocol='self_paced_axes_v2',experiment_mode='navigation_mi_gaze',
+            allow_combos=False,labels=list(CAPTURE_LABELS[:5]),instructions={l:capture_task_spec(l)['instruction'] for l in CAPTURE_LABELS},
+            held=None,held_since=None,pointer_source=None,seq=0,events_saved=0,periods_completed=0,
+            hub_synced=False,hub_ack_seq=0,hub_recording=None,last_recording=None,error=None)
     def start(self):
         if hasattr(self,'thread'):raise ValueError('Collector cannot be reused')
         self.thread=threading.Thread(target=self._run,daemon=True,name='g.Nautilus supervisor');self.thread.start();return self
+    def _on_capture_ack(self,ack):
+        with self.capture_lock:
+            if not isinstance(ack,dict):return
+            if ack.get('ok'):
+                self.capture['hub_synced']=True
+                if ack.get('recording'):self.capture['hub_recording']=ack['recording']
+                if type(ack.get('ack_seq')) is int:self.capture['hub_ack_seq']=max(self.capture['hub_ack_seq'],ack['ack_seq'])
+            elif ack.get('error'):
+                self.capture['error']=str(ack['error'])[:200]
+    def capture_snapshot(self):
+        with self.capture_lock:
+            snap=dict(self.capture)
+            snap['labels']=list(self.capture['labels'])
+            snap['instructions']=dict(self.capture['instructions'])
+            snap['held_duration_s']=round(max(0.,time.monotonic()-self.capture['held_since']),1) if self.capture['active'] and self.capture['held'] and self.capture['held_since'] else 0.0
+            return snap
+    def start_capture(self,*,allow_combos=False,experiment_mode='navigation_mi_gaze'):
+        with self.lock,self.capture_lock:
+            if not self.journal or self.journal.closed or self.state.get('state')!='receiving':
+                raise ValueError('请先点击“开始接收”并确认正在接收脑电数据后，再开始自主采集打标')
+            if self.capture['active']:raise ValueError('自主采集打标会话已在进行中')
+            d=self.descriptor;session_id=secrets.token_hex(16);client_token=secrets.token_urlsafe(24)
+            labels=list(CAPTURE_LABELS) if allow_combos else list(CAPTURE_LABELS[:5])
+            instructions={l:capture_task_spec(l,experiment_mode)['instruction'] for l in CAPTURE_LABELS}
+            sample_at=self.sample_start;now_ns=time.monotonic_ns();utc_ns=time.time_ns()
+            session_row=dict(
+                kind='self_paced_session',schema='gnautilus.session.v1',session_id=session_id,
+                paradigm='self_paced_motor_imagery',presentation_protocol='self_paced_axes_v2',
+                build_id='gnautilus-qt-selfpaced-v1',input_surface='acquisition_client',
+                experiment_mode=experiment_mode,task_binding_version='navigation_mi_gaze_v3',
+                task_guidance_version='gaze_navigation_v2',allow_combos=bool(allow_combos),labels=labels,
+                stream_id=d['stream_id'],source_kind=d['source_kind'],source_epoch=d['epoch'],
+                sample_index_end=sample_at,recorded_monotonic_ns=now_ns,utc_ns=utc_ns,
+                hold_lease_ms=750,formal_training_ready=False,intention_verified=False,
+                motor_artifact_confound=True,display_timing_verified=False,
+                label_semantics='User-held button instruction, not verified intention; release is UNKNOWN, never REST',
+            )
+            self.journal.event(session_row)
+            self.capture.update(
+                active=True,session_id=session_id,client_token=client_token,
+                protocol='self_paced_axes_v2',experiment_mode=experiment_mode,
+                allow_combos=bool(allow_combos),labels=labels,instructions=instructions,
+                held=None,held_since=None,pointer_source=None,
+                seq=0,events_saved=0,periods_completed=0,
+                hub_synced=False,hub_ack_seq=0,hub_recording=None,error=None
+            )
+            self.log.add('标签','INFO',f"开始自主采集打标 · 会话 {session_id[:8]} · {'含转向组合(9类)' if allow_combos else '四方向+静止(5类)'} · 起始样本 {sample_at}")
+            if self.network:
+                self.network.send_capture_event(dict(
+                    op='start',session_id=session_id,client_token=client_token,
+                    build_id='gnautilus-qt-selfpaced-v1',presentation_protocol='self_paced_axes_v2',
+                    allow_combos=bool(allow_combos),experiment_mode=experiment_mode
+                ))
+            return self.capture_snapshot()
+    def _emit_capture_marker(self,phase,label,pointer_source,page_active,*,hold_duration_ms=None):
+        d=self.descriptor;sample_at=self.sample_start;now_ns=time.monotonic_ns();utc_ns=time.time_ns()
+        self.capture['seq']+=1;seq=self.capture['seq'];mode=self.capture['experiment_mode']
+        spec=capture_task_spec(label,mode) if label and phase!='hold_end' else {}
+        source_instructions=dict(
+            experiment_mode=mode,
+            navigation_instruction=label if phase=='hold_start' else None,
+            gaze_instruction=spec.get('gaze_instruction','UNKNOWN'),
+            limb_instruction=spec.get('limb_instruction','UNKNOWN'),
+            motor_instruction=spec.get('motor_instruction','UNKNOWN'),
+            primary_source=spec.get('primary_source','UNKNOWN'),
+            auxiliary_source=spec.get('auxiliary_source','UNKNOWN'),
+            task_binding_version=spec.get('task_binding_version','UNKNOWN'),
+        )
+        event_payload=dict(
+            session_id=self.capture['session_id'],client_token=self.capture['client_token'],
+            seq=seq,label=label,phase=phase,sender_monotonic_ms=now_ns/1e6,
+            clock_offset_ms=0.0,sync_rtt_ms=0.0,sender_frame=seq,
+            xr_active=False,page_active=bool(page_active),pointer_source=pointer_source,
+            client_sample_index_end=sample_at,
+        )
+        if hold_duration_ms is not None:event_payload['hold_duration_ms']=hold_duration_ms
+        marker_row=dict(
+            kind='marker',code='manual_'+phase,**event_payload,**source_instructions,
+            stream_id=d['stream_id'],source_kind=d['source_kind'],source_epoch=d['epoch'],
+            sample_index_end=sample_at,recorded_monotonic_ns=now_ns,utc_ns=utc_ns,
+            source_fresh=True,source_mode='live',intention_verified=False,formal_training_ready=False,
+            motor_artifact_confound=True,input_surface='acquisition_client',
+            label_semantics='held instruction; no label on release',
+            label_axes=CAPTURE_AXES.get(label) if label else None,hold_lease_ms=750,
+        )
+        marker_row.pop('client_token',None)
+        self.journal.event(marker_row)
+        self.capture['events_saved']=seq
+        if self.network:
+            self.network.send_capture_event(dict(
+                op='event',session_id=self.capture['session_id'],
+                session_info=dict(
+                    session_id=self.capture['session_id'],client_token=self.capture['client_token'],
+                    build_id='gnautilus-qt-selfpaced-v1',presentation_protocol='self_paced_axes_v2',
+                    allow_combos=self.capture['allow_combos'],experiment_mode=mode
+                ),
+                event=event_payload
+            ))
+    def hold_start(self,label,*,pointer_source='desktop_pointer',page_active=True):
+        with self.lock,self.capture_lock:
+            if not self.capture['active'] or not self.journal or self.journal.closed:return self.capture_snapshot()
+            if label not in self.capture['labels']:raise ValueError('当前未启用该方向标签：'+str(label))
+            if pointer_source not in ('desktop_pointer','desktop_keyboard'):raise ValueError('无效的打标输入源')
+            if not page_active:raise ValueError('当前窗口未激活，不能开始长按打标')
+            if self.capture['held']==label:return self.capture_snapshot()
+            if self.capture['held'] is not None:
+                self.hold_end(self.capture['held'],pointer_source=self.capture['pointer_source'] or pointer_source,page_active=page_active)
+            self.capture['held']=label;self.capture['held_since']=time.monotonic();self.capture['pointer_source']=pointer_source
+            self._emit_capture_marker('hold_start',label,pointer_source,page_active)
+            self.log.add('标签','INFO',f"开始长按标注 · {CAPTURE_NAMES.get(label,label)} ({label}) · 样本位置 {self.sample_start}")
+            return self.capture_snapshot()
+    def hold_end(self,label=None,*,pointer_source=None,page_active=True):
+        with self.lock,self.capture_lock:
+            if not self.capture['active'] or self.capture['held'] is None:return self.capture_snapshot()
+            if label is not None and label!=self.capture['held']:return self.capture_snapshot()
+            ended=self.capture['held'];src=pointer_source or self.capture['pointer_source'] or 'desktop_pointer'
+            duration_ms=round(max(0.,time.monotonic()-(self.capture['held_since'] or time.monotonic()))*1000,1)
+            self.capture['held']=None;self.capture['held_since']=None;self.capture['pointer_source']=None
+            self.capture['periods_completed']+=1
+            if self.journal and not self.journal.closed:
+                self._emit_capture_marker('hold_end',ended,src,page_active,hold_duration_ms=duration_ms)
+            self.log.add('标签','INFO',f"结束长按标注 · {CAPTURE_NAMES.get(ended,ended)} ({ended}) · 持续 {duration_ms/1000:.2f}s → 松开未标注(UNKNOWN) · 样本位置 {self.sample_start}")
+            return self.capture_snapshot()
+    def capture_heartbeat(self,*,page_active=True):
+        with self.lock,self.capture_lock:
+            if not self.capture['active'] or not self.journal or self.journal.closed:return self.capture_snapshot()
+            if not page_active and self.capture['held'] is not None:
+                self.hold_end(page_active=False)
+            label=self.capture['held'];src=self.capture['pointer_source'] or 'desktop_pointer'
+            self._emit_capture_marker('heartbeat',label,src,page_active)
+            return self.capture_snapshot()
+    def stop_capture(self,reason='completed'):
+        with self.lock,self.capture_lock:
+            if not self.capture['active']:return self.capture_snapshot()
+            if self.capture['held'] is not None:
+                self.hold_end(page_active=True)
+            session_id=self.capture['session_id'];d=self.descriptor;sample_at=getattr(self,'sample_start',0)
+            if self.journal and not self.journal.closed and d:
+                self.journal.event(dict(
+                    kind='marker',code='self_paced_end',session_id=session_id,reason=reason,
+                    completed=(reason=='completed'),formal_training_ready=False,
+                    stream_id=d['stream_id'],source_kind=d['source_kind'],source_epoch=d['epoch'],
+                    sample_index_end=sample_at,recorded_monotonic_ns=time.monotonic_ns(),utc_ns=time.time_ns()
+                ))
+            if self.network:
+                self.network.send_capture_event(dict(op='stop',session_id=session_id,client_token=self.capture['client_token'],reason=reason))
+            self.capture['active']=False;self.capture['last_recording']=self.capture.get('hub_recording') or (session_id[:8] if session_id else None)
+            self.log.add('标签','INFO',f"自主采集打标已停止并保存 · 会话 {session_id[:8]} · 完成 {self.capture['periods_completed']} 个期间／{self.capture['events_saved']} 个事件")
+            return self.capture_snapshot()
     def _write(self):
         try:
             while True:
@@ -217,7 +420,7 @@ class Collector:
             self.journal=StreamJournal(path,d);self.descriptor=d;self.next_seq=1;self.sample_start=0
             self.writer=threading.Thread(target=self._write,daemon=True,name='g.Nautilus disk writer');self.writer.start()
             self.preview.configure(d);self.log.add('采集','INFO',f"共享参与者已就绪：{d['device_serial']} · {d['sampling_rate']}Hz · {len(d['channels'])}列；配置 {d['configuration_sha256'][:12]}")
-            self.network=Replicator(self.journal,self.enrollment,on_event=self.log.add,health_provider=self.health).start()
+            self.network=Replicator(self.journal,self.enrollment,on_event=self.log.add,health_provider=self.health,on_capture_ack=self._on_capture_ack).start()
             with self.lock:self.state.update(state='receiving',sdk_state='participant',descriptor=d,path=str(path))
         elif kind=='block':
             if not self.journal:raise ValueError('Data before stream descriptor')
@@ -275,6 +478,9 @@ class Collector:
                     except queue.Full:self.writer_error=RuntimeError('Disk writer queue stuck')
                 if self.writer.is_alive():self.state.update(state='error',error='写盘线程未结束，文件保持未关闭以供恢复')
                 else:
+                    if self.capture.get('active'):
+                        try:self.stop_capture(reason='completed' if self.state.get('state')!='error' else 'transport_error')
+                        except BaseException:pass
                     # A brief flush opportunity; offline journals stay available for explicit recovery.
                     end=time.monotonic()+5.
                     while self.network.snapshot()['backlog'] and time.monotonic()<end:time.sleep(.02)
@@ -292,6 +498,7 @@ class Collector:
     def snapshot(self):
         with self.lock:s=dict(self.state)
         s['network']=self.network.snapshot() if self.network else dict(connected=False,durable_seq=0,backlog=0,error=None)
+        s['capture']=self.capture_snapshot()
         s['queue_blocks']=self.blocks.qsize();s['supervisor_active']=hasattr(self,'thread') and self.thread.is_alive();return s
     def health(self):
         with self.lock:
