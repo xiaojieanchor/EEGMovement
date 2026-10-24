@@ -9,15 +9,21 @@ from gnautilus_acquisition.contract import block_frame,fingerprint
 from tests.test_gnautilus_transport import descriptor
 from gnautilus_ml.common import atomic,digest,read_json
 
-def fixture_record(path,seed,epoch=0):
-    rng=np.random.default_rng(seed);d=descriptor(source='gtec_live',width=7,fs=128)
-    names=['C3','Cz','C4','Fp1','Fp2','F7','F8']
+def fixture_record(path,seed,epoch=0,channels=None,fs=128,mode=None):
+    names=channels or ['C3','Cz','C4','Fp1','Fp2','F7','F8'];width=len(names)
+    rng=np.random.default_rng(seed);d=descriptor(source='gtec_live',width=width,fs=fs)
     for c,n in zip(d['channels'],names):c['name']=n
     d.update(stream_id=f'{seed:032x}',reference='right_ear',layout_verified=True)
     journal=StreamJournal(path,d);xs=[];events=[];at=0
     for label in range(5):
-        t=np.arange(384)/128;x=rng.normal(0,1,(384,7));x[:,label%3]+=10*np.sin(2*np.pi*(9+label*3)*t);x[:,3:]+=label*4
-        xs.append(x);events.extend([dict(kind='marker',phase='task',label=['REST','FORWARD','BACKWARD','LEFT','RIGHT'][label],sample_index_end=at,source_epoch=0),dict(kind='marker',phase='rest',sample_index_end=at+384,source_epoch=0)]);at+=384
+        n=round(3*fs);t=np.arange(n)/fs;x=rng.normal(0,1,(n,width))
+        column=9+label if width==32 else label%3
+        x[:,column]+=10*np.sin(2*np.pi*((10 if label%2==0 else 20) if width==32 else 9+label*3)*t);x[:,3:]+=label*4
+        task=dict(kind='marker',phase='task',label=['REST','FORWARD','BACKWARD','LEFT','RIGHT'][label],sample_index_end=at,source_epoch=0)
+        if mode:
+            from gnautilus_ml.tasks import task_spec
+            task.update(task_spec(task['label'],mode))
+        xs.append(x);events.extend([task,dict(kind='marker',phase='rest',sample_index_end=at+n,source_epoch=0)]);at+=n
     x=np.concatenate(xs).astype('float32');h,raw=block_frame(d,1,0,x);journal.append(h,raw)
     for event in events:journal.event(event)
     journal.close();return d

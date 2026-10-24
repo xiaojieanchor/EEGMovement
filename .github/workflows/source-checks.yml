@@ -18,7 +18,7 @@ jobs:
           cache: npm
       - run: python -m pip install -r requirements-dev.txt
       - run: python scripts/setup_development.py --role all
-      - run: python -m pytest tests/test_navigation_mi_priority.py tests/test_gaze_priority.py tests/test_gnautilus_ml_v1.py tests/test_gnautilus_transport.py -q
+      - run: python -m pytest tests/test_navigation_mi_priority.py tests/test_gaze_priority.py tests/test_gnautilus_ml_v1.py tests/test_gnautilus_transport.py tests/test_gnautilus_realtime_readiness.py tests/test_gnautilus_32_fullchain.py tests/test_gnautilus_electrode_mapping.py -q
       - run: npm ci --ignore-scripts --no-audit --no-fund
       - run: npm test
       - run: python -m gnautilus_acquisition --smoke-test
