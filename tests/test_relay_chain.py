@@ -133,7 +133,8 @@ class PublicChain(unittest.TestCase):
                 # Transient 300ms stream jitter should invalidate live motion intent
                 # without aborting the active capture session on the Hub.
                 runtime.source_lost('eeg_stream_stale')
-                self.assertEqual(hub.acquisition.snapshot()['phase'],'held')
+                self.assertEqual(hub.acquisition.snapshot()['phase'],'waiting_input')
+                self.assertTrue(hub.acquisition.snapshot()['active'])
                 self.assertIsNotNone(hub.recorder)
                 collector.hold_end('FORWARD',pointer_source='desktop_pointer',page_active=True)
                 push_blocks(4)

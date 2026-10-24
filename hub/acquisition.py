@@ -75,8 +75,10 @@ class GuidedAcquisition:
 
     def _write(self,row):
         relay=getattr(self.hub,'public_relay',None)
-        if relay and row.get('kind')=='marker':row['sample_association']=relay.associate_event(row)
         runtime=getattr(self.hub,"gnautilus_runtime",None)
+        if relay and row.get('kind')=='marker' and not row.get('local_boundary') and getattr(runtime,'active_transport',None)!='lan_ws':
+            row['sample_association']=relay.associate_event(row)
+        elif row.get('kind')=='marker':row.setdefault('timing_semantics','Hub receipt sample boundary; not a hardware trigger timestamp')
         if runtime and runtime.descriptor:
             row.setdefault("stream_id",runtime.descriptor["stream_id"])
             row.setdefault("source_kind",runtime.descriptor["source_kind"])
@@ -149,7 +151,7 @@ class GuidedAcquisition:
             rt=self.hub.gnautilus_runtime
             stalled=getattr(rt,'paused',False) or self.hub.last_packet is None or (self.clock()-self.hub.last_packet>=1.5 and self.clock()-getattr(rt,'last_accept_monotonic',0)>=1.5)
             if stalled:
-                self.stop(reason='source_changed');raise ValueError('EEG数据已中断，标签会话已关闭')
+                self.pause_input('source_changed')
         if self.state.get('paradigm')=='self_paced_motor_imagery':return self.manual_event(data)
         with self.hub.lock,self.lock:
             if not self.state.get('active') or data.get('session_id')!=self.state['session_id']:
@@ -226,12 +228,34 @@ class GuidedAcquisition:
                 if not secrets.compare_digest(str(data.get('client_token','')),self.desktop_token or ''):raise ValueError('Desktop capture belongs to another page')
             return self.stop(data.get('session_id'),data.get('reason','operator_stop'))
 
+    def pause_input(self,reason):
+        with self.hub.lock,self.lock:
+            if not self.state.get('active') or self.state.get('input_paused'):return
+            self._write(dict(kind='marker',code='capture_input_pause',phase='pause',label=None,reason=reason,
+                             local_boundary=True,
+                             session_id=self.state['session_id'],source_epoch=self.hub.epoch,
+                             sample_index_end=self.hub.sample_index,source_fresh=False,hub_receive_monotonic=self.clock()))
+            self.state.update(input_paused=True,phase='waiting_input',label=None,recovery_reason=reason,resume_pending=True)
+
+    def resume_input(self):
+        with self.hub.lock,self.lock:
+            if not self.state.get('active') or not self.state.get('input_paused'):return
+            self._write(dict(kind='marker',code='capture_input_resume',phase='unlabelled',label=None,
+                             local_boundary=True,
+                             session_id=self.state['session_id'],source_epoch=self.hub.epoch,
+                             sample_index_end=self.hub.sample_index,source_fresh=True,hub_receive_monotonic=self.clock()))
+            self.state.update(input_paused=False,phase='unlabelled',label=None,recovery_reason=None,resume_pending=True)
+
     def expire(self):
         with self.hub.lock,self.lock:
             manual=self.state.get('paradigm')=='self_paced_motor_imagery'
             client_surface=self.state.get('input_surface')=='acquisition_client'
             hold_timeout=2.5 if client_surface else .75
             idle_timeout=5.0 if client_surface else (2 if manual else 10)
+            if getattr(self.hub,'new_device_mode',False) and self.state.get('active'):
+                if self.clock()-self.started>(7200 if manual else 1800):self.stop(reason='operator_stop')
+                elif self.clock()-self.last_seen>(hold_timeout if self.state.get('label') is not None else idle_timeout):self.pause_input('sender_timeout')
+                return
             if getattr(self.hub,'new_device_mode',False) and manual and self.state.get('active') and self.state.get('label') is not None and self.clock()-self.last_seen>hold_timeout:
                 self.stop(reason='sender_timeout');return
             if self.state.get('active') and (self.clock()-self.last_seen>idle_timeout or self.clock()-self.started>(7200 if manual else 1800)):
@@ -320,6 +344,23 @@ class GuidedAcquisition:
             if surface=='acquisition_client':
                 if seq<self.state['last_seq']+1:return copy.deepcopy(self.last_ack or dict(ok=True,session_id=self.state['session_id'],ack_seq=self.state['last_seq'],sample_index_end=self.hub.sample_index,source_epoch=self.hub.epoch))
             elif seq!=self.state['last_seq']+1:raise ValueError('Manual events must arrive in sequence')
+            if self.state.get('input_paused') and self.hub.last_packet is not None and 0<=self.clock()-self.hub.last_packet<.25:
+                self.resume_input()
+            if self.state.get('input_paused'):
+                self._write(dict(kind='marker',code='manual_input_wait',phase='waiting_input',label=None,
+                    requested_label=label,session_id=self.state['session_id'],source_epoch=self.hub.epoch,
+                    sample_index_end=self.hub.sample_index,source_fresh=False,hub_receive_monotonic=self.clock()))
+                self.last_seen=self.clock();self.last_payload=payload
+                self.state.update(last_seq=seq,events_saved=self.state.get('events_saved',0)+1)
+                self.last_ack=dict(ok=True,waiting_input=True,session_id=self.state['session_id'],ack_seq=seq,
+                                   sample_index_end=self.hub.sample_index,source_epoch=self.hub.epoch)
+                return copy.deepcopy(self.last_ack)
+            if self.state.get('resume_pending'):
+                if phase=='heartbeat' and label is not None:
+                    data=dict(data,phase='hold_start');phase='hold_start'
+                if phase=='hold_end' and self.state.get('label') is None:
+                    data=dict(data,phase='heartbeat',label=None);phase='heartbeat';label=None
+                self.state['resume_pending']=False
             current=self.state.get('label')
             if surface!='acquisition_client':
                 if phase=='hold_start' and (label is None or current is not None):raise ValueError('Release current label before another start')

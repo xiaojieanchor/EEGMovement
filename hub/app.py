@@ -520,6 +520,7 @@ class Handler(BaseHTTPRequestHandler):
                 with HUB.lock:
                     if getattr(HUB,'model_library',None) and HUB.model_library.switching():raise ValueError('模型正在切换，请等待加载结果')
                     if data.get('enabled') and not HUB.intent.snapshot()['inference_enabled']:raise ValueError('请先启动实时推理，再允许模型动作')
+                    if data.get('enabled') and HUB.new_device_mode and not HUB.intent.snapshot()['fresh']:raise ValueError('推理仍在等待或预热，请在新鲜结果恢复后重新允许动作')
                     return self.send(200,HUB.intent_control.configure(data))
             elif self.path=='/api/source':HUB.set_source(data['mode'],data.get('session'))
             elif self.path=='/api/server/connect':

@@ -3,6 +3,7 @@ import hashlib,http.client,io,json,os,socket,struct,subprocess,sys,threading,tim
 from pathlib import Path
 import paramiko
 from .common import read_json,digest,file_hash
+from .credentials import load_credential,save_credential,forget_credential
 
 
 class TunnelSocket:
@@ -30,7 +31,9 @@ class TunnelSocket:
 def physical_interface(profile):
     if profile.get('bind_address'):return profile['bind_address'],profile.get('interface_index')
     if sys.platform!='win32' or profile.get('network_mode')!='physical_interface':return None,None
-    command="Get-NetIPAddress -AddressFamily IPv4 | Where-Object {$_.IPAddress -notmatch '^(127\\.|169\\.254\\.|198\\.18\\.)' -and $_.InterfaceAlias -notmatch 'Clash|TUN|Loopback|WSL|vEthernet'} | Select-Object IPAddress,InterfaceIndex | ConvertTo-Json -Compress"
+    # Hotspot adapters have addresses but no upstream gateway; do not treat them
+    # as competing routes to private compute when the collector uses the hotspot.
+    command="Get-NetIPConfiguration | Where-Object {$_.IPv4DefaultGateway -and $_.InterfaceAlias -notmatch 'Clash|TUN|Loopback|WSL|vEthernet'} | ForEach-Object { $cfg=$_; $_.IPv4Address | Where-Object {$_.IPAddress -notmatch '^(127\\.|169\\.254\\.|198\\.18\\.)'} | Select-Object IPAddress,@{N='InterfaceIndex';E={$cfg.InterfaceIndex}} } | ConvertTo-Json -Compress"
     result=subprocess.run(['powershell','-NoProfile','-Command',command],capture_output=True,text=True,timeout=8,creationflags=getattr(subprocess,'CREATE_NO_WINDOW',0))
     if result.returncode:raise ConnectionError('Cannot inspect physical network interfaces')
     rows=json.loads(result.stdout or '[]');rows=rows if isinstance(rows,list) else [rows]
@@ -47,27 +50,47 @@ class ComputeBridge:
     def __init__(self,root,event=lambda *a:None):
         self.root=Path(root);cfg=self.root/'configs/gnautilus_compute.json'
         if not cfg.exists() and (self.root/'configs/gnautilus_compute.example.json').exists():cfg=self.root/'configs/gnautilus_compute.example.json'
-        self.profile=read_json(cfg);self.event=event;self.client=None;self.password=None;self.token=None;self.lock=threading.RLock()
+        self.profile=read_json(cfg);self.event=event;self.client=None;self.password=load_credential(self.profile);self.token=None;self.lock=threading.RLock();self.auto_connect_suspended=False
         self.status=dict(ssh_connected=False,worker_connected=False,connecting=False,host=self.profile['host'],ssh_port=self.profile['port'],last_error=None,last_health=None,last_health_time=None,runtime=None,roundtrip_ms=None)
-    def connect(self,password):
+        self.status.update(credential_saved=bool(self.password),auto_connect=True,connection_state='waiting_retry' if self.password else 'credential_required')
+    def connect(self,password=None):
         with self.lock:
-            if self.status['connecting']:return
+            if self.status['connecting']:return False
             self.status['connecting']=True
+        supplied=password is not None
+        password=password or self.password or load_credential(self.profile)
+        c=None;s=None
         try:
-            self.disconnect(quiet=True);self.password=password;p=self.profile;s=socket.socket();s.settimeout(12);s.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
+            self.disconnect(quiet=True);self.password=password;self.auto_connect_suspended=False
+            if not password:raise ValueError('SSH credential required; configure the local Windows credential vault')
+            self.status.update(connection_state='connecting',last_error=None)
+            p=self.profile;s=socket.socket();s.settimeout(12);s.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
             address,index=physical_interface(p)
             if address:s.bind((address,0))
             if sys.platform=='win32' and index:s.setsockopt(socket.IPPROTO_IP,31,struct.pack('!I',int(index)))
             s.connect((p['host'],p['port']));c=paramiko.SSHClient();c.set_missing_host_key_policy(HostKey(p['hostkey_sha256']))
             c.connect(p['host'],port=p['port'],username=p['username'],password=password,sock=s,look_for_keys=False,allow_agent=False,timeout=12,banner_timeout=12,auth_timeout=12)
             c.get_transport().set_keepalive(10);self.client=c;self.status.update(ssh_connected=True,bind_address=address,last_error=None)
+            try:save_credential(p,password);self.status['credential_saved']=True
+            except Exception:self.status['credential_saved']=False
             with c.open_sftp() as f:
                 with f.open(p['root']+'/service.token','r') as stream:self.token=stream.read().decode().strip()
             health=self.call('GET','/health');self.status.update(worker_connected=True,last_health=health,last_health_time=time.monotonic(),runtime=health.get('python'))
+            if health.get('gpu_uuid')!=p.get('gpu_uuid') or health.get('service')!='private_gnautilus_ml':raise ValueError('Private compute service identity or GPU UUID mismatch')
+            self.status.update(connection_state='ready',auto_connect=True)
             self.event('新计算服务器已连接，主机身份与模型服务已核验','good')
+            return True
         except Exception as error:
-            if isinstance(error,paramiko.AuthenticationException):self.password=None
-            self.status.update(worker_connected=False,last_error=str(error));self.event('新计算服务器连接失败：'+str(error),'error')
+            if c:c.close()
+            elif s:s.close()
+            self.client=None;self.token=None
+            invalid=isinstance(error,paramiko.AuthenticationException) or 'host key changed' in str(error)
+            if invalid:
+                self.password=None;self.auto_connect_suspended=True
+                if isinstance(error,paramiko.AuthenticationException):forget_credential(self.profile);self.status['credential_saved']=False
+            self.status.update(ssh_connected=False,worker_connected=False,last_error=str(error),connection_state='authentication_failed' if invalid else 'waiting_retry',auto_connect=not self.auto_connect_suspended)
+            self.event('新计算服务器连接失败：'+str(error),'error')
+            return False
         finally:self.status['connecting']=False
     def command(self,code,timeout=30):
         if not self.client:raise ConnectionError('Connect the private compute server first')
@@ -92,7 +115,7 @@ class ComputeBridge:
             if path in ['/health','/snapshot']:self.status['last_health']={k:value[k] for k in ['project','schema','version','host','gpu_uuid','python','service','device','gpus'] if k in value}
             return value
         except ValueError as error:self.status.update(last_error=str(error));raise
-        except Exception as error:self.status.update(worker_connected=False,last_error=str(error));raise
+        except Exception as error:self.status.update(ssh_connected=False,worker_connected=False,last_error=str(error),connection_state='waiting_retry');raise
         finally:
             if response:response.close()
             conn.close()
@@ -104,7 +127,8 @@ class ComputeBridge:
     def disconnect(self,quiet=False):
         if self.client:self.client.close()
         self.client=None;self.token=None;self.status.update(ssh_connected=False,worker_connected=False)
-        if not quiet:self.password=None
+        if not quiet:
+            self.password=None;self.auto_connect_suspended=True;self.status.update(auto_connect=False,connection_state='disconnected_by_operator')
     def upload_record(self,path):
         from .data import read_native
         p=Path(path);record=read_native(p);key=record['source_sha256'];remote=self.profile['root']+'/data/'+key

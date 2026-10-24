@@ -2,7 +2,7 @@
 import argparse,base64,hashlib,json,os,shutil,subprocess,sys,zipfile
 from pathlib import Path
 ROOT=Path(__file__).resolve().parents[1];sys.path.insert(0,str(ROOT))
-APP_VERSION='1.1.13';APP_RELEASE_SEQ=11013;QUEST_VERSION='2.1.4';QUEST_CODE=21005
+APP_VERSION='1.1.14';APP_RELEASE_SEQ=11014;QUEST_VERSION='2.1.4';QUEST_CODE=21005
 from cryptography.hazmat.primitives import hashes,serialization
 from cryptography.hazmat.primitives.asymmetric import padding
 from eeg_relay.update import file_hash,verify_manifest

@@ -307,6 +307,7 @@ class LanWsReplicator(Replicator):
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
         self.ticket = None
+        self.ticket_received_ns = None
         self.last_hub = 0.0
         self.state.update(
             transport='lan_ws',
@@ -366,6 +367,15 @@ class LanWsReplicator(Replicator):
                     return header, body, 'backfill'
         return None
 
+    def _wire_block(self, header, mode):
+        with self.lock:
+            now = time.monotonic_ns()
+            value = dict(header, mode=mode, ticket=self.ticket,
+                         source_age_ms=source_age_ms(header, self.journal.descriptor['sampling_rate'], now))
+            if self.ticket_received_ns is not None:
+                value['ticket_elapsed_ms'] = max(0., (now-self.ticket_received_ns)/1e6)
+            return value
+
     def _receive(self, ws, broken, errors):
         try:
             while not self.stop_event.is_set() and not broken.is_set():
@@ -390,7 +400,9 @@ class LanWsReplicator(Replicator):
                         self.state['live_accepted'] += bool(reply.get('live_accepted'))
                         self.state['ack_rtt_ms'] = round((time.monotonic() - sent_at) * 1000, 2)
                         self.state['inflight_blocks'] = len(self.pending)
-                    self.ticket = reply.get('ticket') or self.ticket
+                    if reply.get('ticket'):
+                        self.ticket = reply['ticket']
+                        self.ticket_received_ns = time.monotonic_ns()
                     self.last_hub = time.monotonic()
                     self.state['hub_online'] = True
                 self._feedback(reply)
@@ -419,6 +431,7 @@ class LanWsReplicator(Replicator):
                     raise ValueError('中枢未接受流描述')
                 with self.lock:
                     self.ticket = reply.get('ticket')
+                    self.ticket_received_ns = time.monotonic_ns()
                     self.last_hub = time.monotonic()
                     self.pending = {}
                     self.acked.clear()
@@ -459,7 +472,7 @@ class LanWsReplicator(Replicator):
                             with self.lock:
                                 self.pending.pop(header['seq'], None)
                             continue
-                        block = dict(header, mode=mode, ticket=self.ticket, source_age_ms=age)
+                        block = self._wire_block(header, mode)
                         ws.send(pack(dict(kind='block', agent_id=self.enrollment['agent_id'], block=block), body))
                         with self.lock:
                             self.state['sent_blocks'] += 1

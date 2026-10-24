@@ -17,6 +17,19 @@ DEFAULT_LAN_WS_PORT = 8768
 LAN_WS_PATH = '/eeg/v1/lan'
 
 
+def lan_source_mark(issued, now, age, elapsed=None):
+    if issued is None or type(age) not in (int,float) or not math.isfinite(age) or age < 0 or issued > now:
+        return None
+    if elapsed is None:
+        return issued-age/1000
+    # Receipt of a ticket is later than its Hub issuance. Adding only the
+    # client's elapsed interval yields a lower bound without synchronized clocks.
+    # Bound impossible/future claims and subtract a 2ms short-interval drift margin.
+    if type(elapsed) not in (int,float) or not math.isfinite(elapsed) or not 0 <= elapsed <= 2000 or elapsed > (now-issued)*1000+2:
+        return None
+    return min(issued+elapsed/1000-age/1000-.002, now-age/1000)
+
+
 class LanHubServer:
     def __init__(self, runtime, *, host='0.0.0.0', port=DEFAULT_LAN_WS_PORT):
         self.runtime = runtime
@@ -30,17 +43,32 @@ class LanHubServer:
         self.tickets = {}
         self.client_reports = {}
         self.active_clients = 0
+        self.error = None
+        self.discovery_error = None
+        self.timing = {}
 
     def start(self):
         if self.requested_port is None or self.requested_port < 0:
             return self
-        ports = [self.requested_port] if self.requested_port == 0 else [self.requested_port, 0]
-        for candidate in ports:
+        self._bind_once()
+        self.listener_thread = threading.Thread(target=self._retry_listener, daemon=True, name='Hub LAN listener recovery')
+        self.listener_thread.start()
+        return self
+
+    def _retry_listener(self):
+        while not self.stop_event.wait(.5):
+            if self.server is None:
+                self._bind_once()
+
+    def _bind_once(self):
+        with self.lock:
+            if self.stop_event.is_set() or self.server is not None:
+                return
             try:
                 self.server = serve(
                     self._handle_ws,
                     self.host,
-                    candidate,
+                    self.requested_port,
                     process_request=self._handle_http,
                     max_size=8 * 1024 * 1024,
                     max_queue=128,
@@ -51,11 +79,12 @@ class LanHubServer:
                     open_timeout=5,
                 )
                 self.port = self.server.socket.getsockname()[1]
-                break
-            except OSError:
+                self.error = None
+            except OSError as error:
                 self.server = None
+                self.error = f'热点端口 {self.requested_port} 监听失败：{error}；保留固定端口重试，不切换随机端口'
         if self.server is None:
-            return self
+            return
         threading.Thread(target=self.server.serve_forever, daemon=True, name='Hub LAN WebSocket').start()
         try:
             udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
@@ -64,9 +93,15 @@ class LanHubServer:
             udp.settimeout(0.3)
             self.udp_sock = udp
             threading.Thread(target=self._serve_udp, daemon=True, name='Hub LAN UDP discovery').start()
-        except OSError:
+        except OSError as error:
             self.udp_sock = None
-        return self
+            self.discovery_error = str(error)[:240]
+
+    def snapshot(self):
+        with self.lock:
+            return dict(requested_port=self.requested_port, port=self.port, listening=self.server is not None,
+                        discovery_ready=self.udp_sock is not None, error=self.error,
+                        discovery_error=self.discovery_error, active_clients=self.active_clients, timing=dict(self.timing))
 
     def _serve_udp(self):
         while not self.stop_event.is_set() and self.udp_sock:
@@ -220,12 +255,12 @@ class LanHubServer:
                     with self.lock:
                         issued = self.tickets.get((agent_id, b.get('ticket')))
                     age = b.get('source_age_ms')
-                    source_mark = None
-                    if b.get('mode') == 'live' and issued is not None and type(age) in (int, float) and math.isfinite(age) and age >= 0:
-                        # The ticket predates this read. Include its full travel
-                        # time and never clamp old samples into the live budget.
-                        source_mark = issued - float(age) / 1000.0
+                    source_mark = lan_source_mark(issued, now, age, b.get('ticket_elapsed_ms')) if b.get('mode')=='live' else None
+                    ingest_start = time.monotonic()
                     result = service.ingest_external(agent_id, d, b, body, source_mark, transport='lan_ws')
+                    self.timing = dict(ingest_ms=round((time.monotonic()-ingest_start)*1000,2),
+                                       client_age_ms=age, ticket_elapsed_ms=b.get('ticket_elapsed_ms'),
+                                       ticket_age_ms=round((now-issued)*1000,2) if issued is not None else None)
                     if result.get('live_accepted'):
                         with service.lock:
                             service.status['transport'] = 'lan_ws'
@@ -279,3 +314,5 @@ class LanHubServer:
             except Exception:
                 pass
             self.server = None
+        if hasattr(self, 'listener_thread') and self.listener_thread is not threading.current_thread():
+            self.listener_thread.join(2)

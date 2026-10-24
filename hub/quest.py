@@ -162,6 +162,7 @@ class QuestService:
             with self.hub.lock:
                 if getattr(self.hub,'model_library',None) and self.hub.model_library.switching():raise ValueError('模型正在切换，请等待加载结果')
                 if data.get('enabled') and not self.hub.intent.snapshot().get('inference_enabled'):raise ValueError('请先启动实时推理')
+                if data.get('enabled') and getattr(self.hub,'new_device_mode',False) and not self.hub.intent.snapshot().get('fresh'):raise ValueError('推理仍在等待或预热，请在新鲜结果恢复后重新允许动作')
                 return self.hub.intent_control.configure(data)
         if method=='POST' and path=='/v1/mirror':
             if not 32<=len(body)<=262144 or not body.startswith(b'\xff\xd8') or not body.endswith(b'\xff\xd9'):raise ValueError('Bounded JPEG required')

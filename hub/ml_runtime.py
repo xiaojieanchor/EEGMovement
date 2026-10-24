@@ -8,6 +8,7 @@ from gnautilus_ml.algorithms import ALGORITHMS
 class MLManager:
     def __init__(self,hub,root,bridge):
         self.hub=hub;self.root=Path(root);self.bridge=bridge;self.lock=threading.RLock();self.cached={'models':[],'jobs':[]};self.updated=0;self.error=None;self.switch={'state':'idle'}
+        self.retry_at=0;self.retry_delay=2;self.restore_retry_at=0;self.restore_lock=threading.Lock();self.restore_state={'state':'waiting_connection'}
         self.cache_path=self.root/'hub/runtime/gnautilus_ml_cache.json'
         try:self.cached=read_json(self.cache_path)
         except (OSError,ValueError):pass
@@ -17,12 +18,41 @@ class MLManager:
             with self.lock:self.cached=value;self.updated=time.time();self.error=None;atomic(self.cache_path,value)
         except Exception as error:self.error=str(error)
         return self.snapshot()
+    def connection_tick(self,now=None):
+        now=time.monotonic() if now is None else now
+        if self.bridge.auto_connect_suspended or self.bridge.status.get('connecting'):return
+        if self.bridge.status.get('ssh_connected') and self.bridge.status.get('worker_connected'):
+            self.refresh()
+            if not self.error:self.retry_delay=2;self.restore_selected(now);return
+        if now<self.retry_at or not self.bridge.password:return
+        self.hub.intent.invalidate('private_compute_link_reconnect',preserve_mode=True)
+        ok=self.bridge.connect();self.retry_at=now+self.retry_delay;self.retry_delay=min(30,self.retry_delay*2)
+        if ok:self.refresh();self.restore_selected(now)
+    def restore_selected(self,now=None):
+        now=time.monotonic() if now is None else now
+        if not self.restore_lock.acquire(blocking=False):return
+        try:
+            mid=self.cached.get('selected');loaded=self.cached.get('loaded')
+            if not mid:self.restore_state={'state':'selection_required','message':'尚未选择模型；不会按分数自动替换'};return
+            meta=next((m for m in self.cached.get('models',[]) if m['model_id']==mid),None)
+            if meta is None:self.restore_state={'state':'selected_model_missing','model_id':mid};return
+            if loaded:
+                actual=next((m for m in self.cached.get('models',[]) if m['model_id']==loaded),{})
+                self.restore_state={'state':'loaded' if actual.get('runtime_accepted') else 'loaded_offline','model_id':loaded,'message':'推理与动作分别手动启动'};return
+            if now<self.restore_retry_at or self.switching():return
+            self.restore_retry_at=now+15;self.restore_state={'state':'loading','model_id':mid}
+            try:
+                self.hub.intent_control.configure({'enabled':False})
+                self.bridge.call('POST','/models/activate',{'id':mid,'weights_sha256':meta.get('weights_sha256')},timeout=20)
+                self.refresh()
+                if self.cached.get('loaded')!=mid or self.error:raise ValueError('Model loading has no fresh matching receipt')
+                self.restore_state={'state':'loaded' if meta.get('runtime_accepted') else 'loaded_offline','model_id':mid,'message':'已恢复原先选择的模型；推理与动作分别手动启动'}
+            except Exception as error:self.restore_state={'state':'waiting_retry','model_id':mid,'error':str(error)}
+        finally:self.restore_lock.release()
     def loop(self):
-        retry_at=0;delay=2
         while not self.hub.stop_event.wait(2):
-            if self.bridge.status.get('ssh_connected'):self.refresh();delay=2
-            elif self.bridge.password and time.monotonic()>=retry_at and not self.bridge.status.get('connecting'):
-                self.hub.intent.invalidate('private_compute_link_reconnect');self.bridge.connect(self.bridge.password);retry_at=time.monotonic()+delay;delay=min(30,delay*2)
+            try:self.connection_tick()
+            except Exception as error:self.error=str(error)
     def switching(self):return self.switch['state']=='switching'
     def request_refresh(self):
         if not self.bridge.status.get('ssh_connected'):raise ValueError('请先连接新的私有计算服务器')
@@ -35,7 +65,7 @@ class MLManager:
         return self.snapshot()
     def snapshot(self):
         with self.lock:
-            cache=self.cached;groups={};selected=cache.get('selected');loaded=cache.get('loaded');fresh=bool(self.updated and time.time()-self.updated<8 and self.bridge.status.get('ssh_connected'))
+            cache=self.cached;groups={};selected=cache.get('selected');fresh=bool(self.updated and time.time()-self.updated<8 and not self.error and self.bridge.status.get('ssh_connected') and self.bridge.status.get('worker_connected'));loaded=cache.get('loaded') if fresh else None
             for m in cache.get('models',[]):
                 alg=m['algorithm'];metrics=m.get('metrics',{})
                 def score(key):
@@ -45,7 +75,8 @@ class MLManager:
                 groups.setdefault(alg,dict(id=alg,title=ALGORITHMS.get(alg,alg),versions=[]))['versions'].append(row)
             return dict(schema='gnautilus.models.v1',models=cache.get('models',[]),groups=list(groups.values()),total_versions=len(cache.get('models',[])),active={'model_id':loaded} if loaded else None,
                         current_model_id=loaded,selected_model_id=selected,server_connected=bool(self.bridge.status.get('ssh_connected')),remote_fresh=fresh,refreshed_at=self.updated or None,error=self.error,
-                        refreshing=False,refresh_state='failed' if self.error else 'complete' if self.updated else 'idle',switching=self.switching(),switch=self.switch,read_only=False)
+                        refreshing=False,refresh_state='failed' if self.error else 'complete' if self.updated else 'idle',switching=self.switching(),switch=self.switch,read_only=False,restore=self.restore_state,
+                        runtime_model_count=sum(bool(m.get('runtime_accepted')) for m in cache.get('models',[])))
     def training(self):return dict(schema='gnautilus.training.v1',jobs=self.cached.get('jobs',[]),fresh=bool(self.updated and time.time()-self.updated<8),updated_at=self.updated,error=self.error,server=self.bridge.status)
     def preparation(self,state):
         import datetime
@@ -115,6 +146,7 @@ class MLIntent:
     def __init__(self,hub,manager):
         self.hub=hub;self.manager=manager;self.lock=threading.RLock();self.inference_enabled=False;self.generation=0;self.remote_generation=None;self.latest=None;self.last_return=0;self.error=None;self.rejection=None;self.state='stopped';self.model_id=None;self.last_sample=None
         self.clip_library=self
+        self.retry_at=0
     def catalog(self):return {'schema':'gnautilus.replay.v1','records':[],'reason':'在训练工作台选择已登记数据集，回放不会进入实时动作'}
     def start(self,purpose='normal'):
         if purpose!='normal':raise ValueError('新设备诊断请使用工作台的独立离线回放')
@@ -125,15 +157,19 @@ class MLIntent:
         return self.snapshot()
     def stop(self):
         with self.lock:
-            self.inference_enabled=False;self.latest=None;self.last_return=0;self.last_sample=None;self.state='stopped';self.generation+=1
+            self.inference_enabled=False;self.latest=None;self.last_return=0;self.last_sample=None;self.remote_generation=None;self.state='stopped';self.generation+=1
         self.hub.intent_control.configure({'enabled':False});self.hub.vr.stop_test()
         def remote_stop():
             try:self.manager.bridge.call('POST','/inference/stop',{},timeout=3)
             except Exception:pass
         # Synchronous for an explicit operator request; no hub acquisition lock is held here.
         remote_stop();return self.snapshot()
-    def invalidate(self,reason):
-        with self.lock:self.latest=None;self.last_return=0;self.last_sample=None;self.rejection=reason;self.generation+=1;self.inference_enabled=False;self.state='stopped'
+    def invalidate(self,reason,*,preserve_mode=False):
+        with self.lock:
+            enabled=self.inference_enabled and preserve_mode
+            if self.state=='waiting_input' and self.rejection==reason and self.latest is None and self.remote_generation is None and self.last_sample is None and enabled:return
+            self.latest=None;self.last_return=0;self.last_sample=None;self.remote_generation=None;self.rejection=reason
+            self.generation+=1;self.inference_enabled=enabled;self.state='waiting_input' if enabled else 'stopped'
         self.hub.intent_control.configure({'enabled':False})
     def cancel_test(self):pass
     def stop_replay(self):return self.stop()
@@ -163,6 +199,15 @@ class MLIntent:
                 origin=payload['input_origin_monotonic'];history=payload['samples'][-n:];validation=[i for i,c in enumerate(d['channels']) if c['kind']=='VALIDATION']
                 device_valid=bool(np.all(history[:,validation]==1)) if validation else None
                 if device_valid is False:raise ValueError('History contains device-invalid samples; waiting for a clean full window')
+                if self.remote_generation is None:
+                    if time.monotonic()<self.retry_at:continue
+                    self.retry_at=time.monotonic()+1
+                    if self.manager.cached.get('loaded')!=self.model_id:raise ValueError('等待原模型重新加载，不能自动切换到其它模型')
+                    lease=self.manager.bridge.call('POST','/inference/start',{},timeout=3)
+                    with self.lock:
+                        if generation!=self.generation or not self.inference_enabled:continue
+                        if lease['model_id']!=self.model_id:raise ValueError('等待原模型重新加载，不能自动切换到其它模型')
+                        self.remote_generation=lease['generation']
                 request=dict(descriptor=d,model_id=self.model_id,generation=self.remote_generation,stream_id=payload['stream_id'],source_epoch=payload['source_epoch'],sample_index_end=end,
                     samples=history[:,indices].T.tolist(),device_valid=device_valid)
                 result=self.manager.bridge.call('POST','/inference/predict',request,timeout=2)
@@ -177,7 +222,7 @@ class MLIntent:
             except Exception as error:
                 with self.lock:self.latest=None;self.state='waiting_input';self.error=str(error);self.rejection=str(error)
                 self.hub.intent_control.update(None)
-                if isinstance(error,(ConnectionError,OSError)) or 'lease expired' in str(error) or 'generation/model' in str(error):self.invalidate(str(error))
+                if isinstance(error,(ConnectionError,OSError)) or 'lease expired' in str(error) or 'generation/model' in str(error):self.invalidate(str(error),preserve_mode=True)
     def readiness(self):
         snap=self.snapshot();prediction=snap['latest'];collecting=bool(self.hub.recorder or self.hub.acquisition.snapshot().get('active') or self.manager.switching())
         decision=self.hub.intent_control.update(prediction if snap['fresh'] else None,collecting)

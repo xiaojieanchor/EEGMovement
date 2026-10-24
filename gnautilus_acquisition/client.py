@@ -258,6 +258,7 @@ class Collector:
                 if ack.get('recording'):self.capture['hub_recording']=ack['recording']
                 if type(ack.get('ack_seq')) is int:self.capture['hub_ack_seq']=max(self.capture['hub_ack_seq'],ack['ack_seq'])
             elif ack.get('error'):
+                self.capture['hub_synced']=False
                 self.capture['error']=str(ack['error'])[:200]
     def capture_snapshot(self):
         with self.capture_lock:

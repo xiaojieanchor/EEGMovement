@@ -78,7 +78,7 @@ def _intent_fixture():
     payload=dict(descriptor=d,sample_index_end=192,stream_id='stream',source_epoch=4,samples=history,input_origin_monotonic=time.monotonic())
     hub.gnautilus_runtime.model_input.return_value=payload
     manager=Mock();manager.cached={'models':[dict(model_id='m',window_s=1.5,algorithm='bandpower_lda')]}
-    intent=MLIntent(hub,manager);intent.model_id='m';intent.inference_enabled=True
+    intent=MLIntent(hub,manager);intent.model_id='m';intent.inference_enabled=True;intent.remote_generation=1
     return intent,hub,manager,payload
 
 

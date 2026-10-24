@@ -40,7 +40,7 @@ class GnautilusRuntime:
     def __init__(self,hub,root,*,port=8767,lan_ws_port=DEFAULT_LAN_WS_PORT):
         self.hub,self.root=hub,root;self.descriptor=None;self.last_seq=None;self.last_counter=None;self.received_blocks=0;self.last_close=None
         self.last_accept_monotonic=0.0
-        self.active_transport=None;self.gap_count=0;self.last_gap=None
+        self.active_transport=None;self.gap_count=0;self.last_gap=None;self.input_suspended=False;self.recording_requested=False;self.recovery_count=0
         self.service=IngestService(root,self.accept,on_descriptor=self.describe,on_state=self.connection_state,on_capture_event=self.client_capture_event,get_hub_state=self.feedback,port=port)
         self.lan_ws=LanHubServer(self,port=lan_ws_port)
         self.feedback_boot_id=secrets.token_hex(8);self.feedback_logs=collections.deque(maxlen=20);self.feedback_log_seq=0
@@ -70,7 +70,7 @@ class GnautilusRuntime:
                 contact_quality_known=False,source_fresh=self.fresh(),hub_utc_ns=time.time_ns(),
                 log_boot_id=self.feedback_boot_id,logs=list(self.feedback_logs),
                 source_age_ms=round((time.monotonic()-self.hub.last_packet)*1000,2) if self.hub.last_packet is not None else None,last_source_loss=self.last_source_loss,
-                active_transport=self.active_transport,gap_count=self.gap_count,last_gap=self.last_gap)
+                active_transport=self.active_transport,input_paused=self.input_suspended,gap_count=self.gap_count,last_gap=self.last_gap,lan_listener=self.lan_ws.snapshot())
     def _tick(self):
         while not self.stop_event.wait(.1):
             try:
@@ -82,10 +82,12 @@ class GnautilusRuntime:
     def describe(self,descriptor):
         d=validate_descriptor(descriptor)
         old=self.descriptor
-        if old and old['stream_id']!=d['stream_id']:self.source_lost('source_changed')
+        changed=old is not None and (old['stream_id'],old['epoch'],old['configuration_sha256'],old['channels'])!=(d['stream_id'],d['epoch'],d['configuration_sha256'],d['channels'])
+        if changed:
+            self.source_lost('source_changed')
         with self.hub.lock:
             if old is None or (old['stream_id'],old['epoch'],old['configuration_sha256'],old['channels'])!=(d['stream_id'],d['epoch'],d['configuration_sha256'],d['channels']):
-                if hasattr(self.hub,'ml'):self.hub.intent.invalidate('source_configuration_changed')
+                if hasattr(self.hub,'ml'):self.hub.intent.invalidate('source_configuration_changed',preserve_mode=True)
                 self.last_seq=self.last_counter=None;self.hub.epoch+=1;self.hub.sample_index=0;self.hub.last_packet=None
                 size=max(1,int(d['sampling_rate']*5))
                 self.hub.raw=collections.deque(maxlen=size);self.hub.filtered=collections.deque(maxlen=size);self.hub.notched=collections.deque(maxlen=size)
@@ -109,8 +111,7 @@ class GnautilusRuntime:
         if gap:
             self.gap_count+=1;self.last_gap=dict(previous_seq=self.last_seq,received_seq=header['seq'],expected_sample_start=h.sample_index,
                 received_sample_start=header['sample_start'],counter_gap=counter_gap,time_ns=time.time_ns(),transport=header.get('ingest_transport'))
-            self.source_lost('source_changed')
-            with h.lock:h.epoch+=1;h.raw.clear();h.filtered.clear();h.notched.clear()
+            self.source_lost('sample_gap')
         now=time.monotonic();eeg=[i for i,c in enumerate(d['channels']) if c['kind']=='EEG']
         validation=[i for i,c in enumerate(d['channels']) if c['kind']=='VALIDATION']
         finite=np.all(np.isfinite(x[:,eeg]),axis=0)
@@ -126,12 +127,22 @@ class GnautilusRuntime:
                 checked_monotonic=now,reasons=['electrode_contact_not_measured'],formal_training_ready=False)
             self.last_seq=header['seq'];self.received_blocks+=1;self.last_accept_monotonic=now
             self.active_transport=header.get('ingest_transport','tls_ingest')
+            if self.recording_requested and h.recorder is not None:
+                recorded=h.recorder.journal.descriptor
+                if (recorded['stream_id'],recorded['epoch'],recorded['configuration_sha256'],recorded['channels'])!=(d['stream_id'],d['epoch'],d['configuration_sha256'],d['channels']):
+                    self.stop_recording(preserve_mode=True)
+            if self.recording_requested and h.recorder is None:self.start_recording(allow_recent=True)
             with h.record_lock:
                 if h.recorder:
                     h.recorder.append_block(header,x);h.recording_samples+=len(x)
                     h.recorder.write(json.dumps(dict(kind='quality',stream_id=d['stream_id'],source_epoch=h.epoch,
                         sample_index_start=header['sample_start'],sample_index_end=h.sample_index,device_valid=device_valid,
                         finite_eeg=bool(np.all(finite)),counter_gap=counter_gap,contact_quality_known=False,training_mask=[False]*len(channels)))+'\n')
+            if self.input_suspended:
+                self.input_suspended=False
+                self.recovery_count+=1
+                h.intent_control.configure({'enabled':False})
+                if hasattr(h,'acquisition') and hasattr(h.acquisition,'resume_input'):h.acquisition.resume_input()
     def client_capture_event(self,agent,data):
         if not isinstance(data,dict) or not hasattr(self.hub,'acquisition'):
             return dict(ok=False,error='Acquisition service unavailable')
@@ -160,18 +171,9 @@ class GnautilusRuntime:
                 return dict(ok=True,op='start',session_id=current['session_id'],recording=current.get('recording'))
             elif op=='event':
                 current=acq.snapshot()
-                if not current.get('active') and isinstance(data.get('session_info'),dict):
-                    info=data['session_info']
-                    acq.start_manual(dict(
-                        build_id=info.get('build_id','gnautilus-qt-selfpaced-v1'),
-                        paradigm='self_paced_motor_imagery',
-                        presentation_protocol=info.get('presentation_protocol','self_paced_axes_v2'),
-                        input_surface='acquisition_client',
-                        task_guidance_version='gaze_navigation_v2',
-                        allow_combos=bool(info.get('allow_combos')),
-                        session_id=info.get('session_id'),
-                        client_token=info.get('client_token'),
-                    ))
+                if not current.get('active'):
+                    return dict(ok=False,op='event',session_id=data.get('session_id'),session_closed=True,
+                                error='中枢标签会话已关闭，请结束当前打标后重新开始；心跳不能自动重建会话')
                 res=acq.manual_event(data.get('event') or {})
                 return dict(ok=True,op='event',session_id=res['session_id'],ack_seq=res['ack_seq'],sample_index_end=res['sample_index_end'])
             elif op=='stop':
@@ -184,29 +186,34 @@ class GnautilusRuntime:
         except Exception as error:
             return dict(ok=False,op=op,session_id=data.get('session_id'),error=str(error)[:240])
     def connection_state(self,state):
-        if state.get('state')=='disconnected':self.source_lost('transport_error')
+        if state.get('state')=='disconnected' and self.active_transport in (None,'tls_ingest'):self.source_lost('transport_error')
     def source_lost(self,reason):
         h=self.hub
         with h.lock:
-            now=time.monotonic()
-            stale_abort=(reason!='eeg_stream_stale' or h.last_packet is None or
-                         (now-h.last_packet>=1.5 and now-getattr(self,'last_accept_monotonic',0)>=1.5))
-            active=bool(h.recorder or hasattr(h,'acquisition') and h.acquisition.snapshot().get('active'))
-            if active and stale_abort:
-                age=round((now-h.last_packet)*1000,2) if h.last_packet is not None else None
+            terminal=reason in ('shutdown','emergency','operator_stop','operator_pause')
+            first=not self.input_suspended
+            if hasattr(h,'acquisition') and h.acquisition.snapshot().get('active'):
+                if terminal:h.acquisition.stop(reason=reason)
+                elif hasattr(h.acquisition,'pause_input'):h.acquisition.pause_input(reason)
+            elif terminal and h.recorder:self.stop_recording()
+            if hasattr(h,'ml') and (h.intent.inference_enabled or h.intent.latest):
+                h.intent.invalidate(reason,preserve_mode=not terminal)
+            h.intent_control.configure({'enabled':False})
+            if first or terminal:
+                age=round((time.monotonic()-h.last_packet)*1000,2) if h.last_packet is not None else None
                 self.last_source_loss=dict(reason=reason,source_age_ms=age,sample_index_end=h.sample_index,time_ns=time.time_ns())
-                self.log_feedback('连接',f'采集已中断 · {reason} · 数据年龄 {age}ms','WARN')
-            if hasattr(h,'ml') and (h.intent.inference_enabled or h.intent.latest):h.intent.invalidate(reason)
-            if stale_abort:
-                if hasattr(h,'acquisition') and h.acquisition.snapshot().get('active'):h.acquisition.stop(reason=reason)
-                elif h.recorder:self.stop_recording()
-            if hasattr(h,'vr'):h.vr.stop_test()
-            if reason!='eeg_stream_stale':h.last_packet=None;h.connected=False
+                if not terminal:self.log_feedback('连接',f'输入暂停 · {reason} · 保留模式，等待自动恢复','WARN')
+                if hasattr(h,'vr'):h.vr.stop_test()
+                h.raw.clear();h.filtered.clear();h.notched.clear()
+                self.last_seq=self.last_counter=None
+                if self.descriptor:h.epoch+=1
+            self.input_suspended=True;h.last_packet=None;h.connected=False
     def start_recording(self,*,allow_recent=False):
         h=self.hub
         with h.lock,h.record_lock:
             fresh_ok=self.fresh() or (allow_recent and not self.paused and h.last_packet is not None and 0<=time.monotonic()-h.last_packet<1.5)
             if not self.descriptor or self.descriptor['source_kind']!='gtec_live' or not fresh_ok:raise ValueError('需要新鲜的真实g.Nautilus数据；模拟/回放不能启动个人采集')
+            self.recording_requested=True
             if h.recorder:return
             if hasattr(h,'ml'):h.intent_control.configure({'enabled':False});h.vr.stop_test()
             name=datetime.datetime.now().strftime('%Y%m%d-%H%M%S')+'-'+secrets.token_hex(4)
@@ -214,7 +221,8 @@ class GnautilusRuntime:
             h.recorder=SessionRecorder(path,self.descriptor,h);h.recording_name=name;h.recording_samples=0
         self.log_feedback('记录','已创建原始记录，数据与标签分开持久化')
         h.event('开始g.Nautilus原始记录：'+name,'info')
-    def stop_recording(self):
+    def stop_recording(self,*,preserve_mode=False):
+        if not preserve_mode:self.recording_requested=False
         h=self.hub
         with h.lock,h.record_lock:
             if h.recorder:
@@ -252,14 +260,14 @@ class GnautilusRuntime:
                 connected=bool(fresh),fresh=fresh,age_ms=round((time.monotonic()-h.last_packet)*1000,2) if h.last_packet else None,
                 nominal_sfreq=fs,configured_sfreq=fs,sfreq_measured=None,sampling_rate_source='device_configuration',samples_total=h.sample_index,source_epoch=h.epoch,
                 stream_id=d['stream_id'] if d else None,source_kind=d['source_kind'] if d else None,sequence=self.last_seq,
-                continuous_samples=len(h.raw),endpoint='LAN WebSocket :'+str(self.lan_ws.port) if self.active_transport=='lan_ws' else 'TLS ingest :'+str(self.service.port),error=self.error or ingest.get('error'),stats=dict(gap_count=self.gap_count,last_gap=self.last_gap,active_transport=self.active_transport)),
+                continuous_samples=len(h.raw),endpoint='LAN WebSocket :'+str(self.lan_ws.port) if self.active_transport=='lan_ws' else 'TLS ingest :'+str(self.service.port),error=self.error or ingest.get('error'),stats=dict(gap_count=self.gap_count,last_gap=self.last_gap,recovery_count=self.recovery_count,input_paused=self.input_suspended,active_transport=self.active_transport)),
                 quality=quality,processing=dict(causal=True,bandpass='原厂配置',notch='原厂配置',window_ms=None,hop_ms=None,
                     channel_names=[c['name'] for c in channels],montage_verified=d.get('layout_verified',False) if d else False,filter_applied_by_hub=False),
                 server=h.remote.snapshot() if hasattr(h,'ml') else dict(ssh_connected=False,worker_connected=False,last_health=None,health_age_ms=None),result=None,result_age_ms=None,result_fresh=False,
                 performance=dict(errors=0,return_count=0),control=dict(enabled=False,**self.execution(),speed=self.execution()['actual_speed'],yaw_rate=self.execution()['actual_yaw_rate'],reasons=['执行状态以接收端新鲜遥测为准']),
                 vr=h.vr.snapshot() if hasattr(h.vr,'snapshot') else {},recording=dict(active=h.recorder is not None,name=h.recording_name,samples=h.recording_samples),
                 waveforms=dict(raw=list(h.raw)[-int((fs or 1)*3):],filtered=list(h.raw)[-int((fs or 1)*3):],notch50=[],display_sfreq=fs,seconds=3),
-                gnautilus=dict(ingest,last_session=self.last_close,descriptor=d,storage_root=str(self.root/'data/gnautilus'),error=self.error or ingest.get('error')),events=list(getattr(h,'events',[]))[:20])
+                gnautilus=dict(ingest,last_session=self.last_close,descriptor=d,storage_root=str(self.root/'data/gnautilus'),error=self.error or ingest.get('error'),lan_listener=self.lan_ws.snapshot()),events=list(getattr(h,'events',[]))[:20])
     def close(self):
         self.stop_event.set();self.source_lost('shutdown');self.lan_ws.close();self.service.close()
         if hasattr(self,'thread'):self.thread.join(1)
