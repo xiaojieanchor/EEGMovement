@@ -255,6 +255,40 @@ class SDKTests(unittest.TestCase):
         self.assertNotEqual(other.open()['configuration_sha256'], first)
         other.close()
 
+    def test_running_acquisition_scaling_refusal_is_explicit_unknown_metadata(self):
+        reader, driver = self.reader()
+        def refused(*args):
+            raise SDKError('gds_4294967295', 'Data acquisition is running.', native_code=0xFFFFFFFF)
+        driver.get_scaling = refused
+        desc = reader.open()
+        self.assertIsNone(desc['configuration']['scaling'])
+        self.assertEqual(desc['configuration']['scaling_query']['status'], 'unavailable_during_acquisition')
+        self.assertFalse(desc['configuration']['scaling_query']['client_rescaling_applied'])
+        np.testing.assert_array_equal(reader.read(), driver.buffer)
+        reader.close()
+        self.assertEqual(driver.calls.count('stop_streaming'), 1)
+        self.assertFalse(any('acquisition' in str(c) for c in driver.calls))
+
+    def test_unrelated_scaling_failures_still_stop_before_streaming(self):
+        for code, message in [(22, 'Timeout'), (0xFFFFFFFF, 'Other failure'), (13, 'Data acquisition is running.')]:
+            reader, driver = self.reader()
+            def refused(*args):
+                raise SDKError('test_refusal', message, native_code=code)
+            driver.get_scaling = refused
+            with self.assertRaises(SDKError):reader.open()
+            self.assertNotIn('start_streaming', driver.calls)
+            self.assertIn('disconnect', driver.calls)
+
+    def test_configuration_change_during_scaling_refusal_still_vetoes_stream(self):
+        reader, driver = self.reader()
+        def refused(*args):
+            driver.changed = 'configuration_changed'
+            raise SDKError('gds_4294967295', 'Data acquisition is running.', native_code=0xFFFFFFFF)
+        driver.get_scaling = refused
+        with self.assertRaises(SDKError) as caught:reader.open()
+        self.assertEqual(caught.exception.code, 'configuration_changed')
+        self.assertNotIn('start_streaming', driver.calls)
+
     def test_active_filter_index_must_exist_in_reported_catalog(self):
         reader, driver = self.reader()
         driver.config['Channels'][0]['BandpassFilterIndex'] = 999

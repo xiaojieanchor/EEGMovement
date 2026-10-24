@@ -61,7 +61,9 @@ def probe_participant(settings, *, seconds=2., startup_timeout=8., worker_factor
                 descriptor = message['descriptor']
                 result.update(sampling_rate=descriptor['sampling_rate'],
                               columns=len(descriptor['channels']),
-                              eeg_channels=sum(c['kind'] == 'EEG' for c in descriptor['channels']))
+                              eeg_channels=sum(c['kind'] == 'EEG' for c in descriptor['channels']),
+                              sampling_rate_source='vendor_configuration',
+                              scaling_status=descriptor.get('configuration', {}).get('scaling_query', {}).get('status', 'unknown'))
                 deadline = time.monotonic() + seconds
             elif message['kind'] == 'block':
                 result['samples'] += len(message['samples'])

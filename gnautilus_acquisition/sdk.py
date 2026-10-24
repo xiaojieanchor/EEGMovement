@@ -448,7 +448,26 @@ class ParticipantReader:
             config['available_channels'] = list(available)
             config['supported_sampling_rates'] = list(rates)
             config['device_channel_names'] = driver.get_channel_names(self.handle, self.serial)
-            config['scaling'] = driver.get_scaling(self.handle, self.serial)
+            try:
+                config['scaling'] = driver.get_scaling(self.handle, self.serial)
+                config['scaling_query'] = {'status': 'available'}
+            except SDKError as error:
+                # Suite 2020's GetScaling rejects a running acquisition with
+                # UNKNOWN + this exact vendor message. Scaling is diagnostic
+                # metadata only: GetData floats are preserved without applying
+                # these coefficients. Never stop the owner's acquisition to
+                # query it, and never invent identity/default coefficients.
+                if error.native_code != 0xFFFFFFFF or 'Data acquisition is running.' not in str(error):
+                    raise
+                self._assert_state()
+                config['scaling'] = None
+                config['scaling_query'] = {
+                    'status': 'unavailable_during_acquisition',
+                    'api': 'GDS_GNAUTILUS_GetScaling',
+                    'native_code': error.native_code,
+                    'message': 'Data acquisition is running.',
+                    'client_rescaling_applied': False,
+                }
             catalogs = driver.get_filter_info(self.handle, self.serial)
             catalog_json = json.dumps(catalogs, ensure_ascii=False, sort_keys=True, separators=(',', ':'), allow_nan=False)
             # Active filter metadata belongs to this stream. Whole capability
