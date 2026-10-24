@@ -79,5 +79,46 @@ class QtTests(unittest.TestCase):
         self.assertIn('relay.example:443',self.w.pairing_status.text());self.assertEqual(self.w.settings.load()['pairing_path'],str(p))
         self.assertIn('relay.example:443','\n'.join(row['message'] for row in self.w.events.snapshot()))
 
+    def discover_result(self, groups, selected=''):
+        from gnautilus_acquisition.diagnostics import describe_devices
+        self.c.running=False;self.w.controller.collector=None
+        self.w.fields['serial'].setText(selected)
+        report=describe_devices(groups, selected or None)
+        with patch('gnautilus_acquisition.diagnostics.diagnose_sdk',return_value=report):
+            self.w.discover();end=time.monotonic()+2
+            while self.w.busy and time.monotonic()<end:
+                self.app.processEvents();self.w.refresh();time.sleep(.005)
+        self.assertFalse(self.w.busy)
+        return report
+
+    def test_visible_idle_device_is_displayed_and_can_be_selected(self):
+        from tests.test_gnautilus_diagnostics import group
+        self.discover_result([group('PHYSICAL-TEST',False)])
+        self.assertIn('PHYSICAL-TEST',self.w.device_status.text())
+        self.assertIn('未建立原厂会话',self.w.device_status.text())
+        self.assertEqual(self.w.fields['serial'].text(),'PHYSICAL-TEST')
+        self.assertFalse(self.w.device_diagnosis['stream_verified'])
+
+    def test_shared_session_is_reported_without_claiming_samples(self):
+        from tests.test_gnautilus_diagnostics import group
+        self.discover_result([group('SHARED-TEST',True)])
+        self.assertIn('尚未验证',self.w.device_status.text())
+        self.assertEqual(self.w.fields['serial'].text(),'SHARED-TEST')
+        self.assertFalse(self.w.device_diagnosis['stream_verified'])
+
+    def test_missing_selected_serial_is_not_silently_replaced(self):
+        from tests.test_gnautilus_diagnostics import group
+        self.discover_result([group('OTHER',True)],'SELECTED')
+        self.assertEqual(self.w.fields['serial'].text(),'SELECTED')
+        self.assertIn('未找到所选序列号',self.w.device_status.text())
+
+    def test_discovery_error_is_shown_as_device_diagnosis(self):
+        self.c.running=False;self.w.controller.collector=None
+        with patch('gnautilus_acquisition.diagnostics.diagnose_sdk',return_value=dict(code='service_query_failed',message='服务查询被拒绝，状态未知',ready_for_participant=False)):
+            self.w.discover();end=time.monotonic()+2
+            while self.w.busy and time.monotonic()<end:
+                self.app.processEvents();self.w.refresh();time.sleep(.005)
+        self.assertIn('状态未知',self.w.device_status.text())
+
 
 if __name__=='__main__':unittest.main()

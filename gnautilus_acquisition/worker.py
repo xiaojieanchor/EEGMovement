@@ -17,7 +17,7 @@ def _discover(connection,settings,reader_factory):
     try:
         reader=reader_factory(**settings);connection.send({'devices':reader.discover()})
     except BaseException as e:
-        connection.send({'code':getattr(e,'code',type(e).__name__),'error':str(e)})
+        connection.send({'code':getattr(e,'code',type(e).__name__),'error':str(e),'native_code':getattr(e,'native_code',None)})
     finally:
         if reader:
             try:reader.close()
@@ -31,7 +31,7 @@ def discover_devices(settings,timeout=5,reader_factory=ParticipantReader):
     try:
         if not receive.poll(timeout):raise SDKError('discovery_timeout','设备发现超时；未启动采集。')
         result=receive.recv()
-        if 'error' in result:raise SDKError(result['code'],result['error'])
+        if 'error' in result:raise SDKError(result['code'],result['error'],native_code=result.get('native_code'))
         return result['devices']
     finally:
         if process.is_alive():process.terminate()

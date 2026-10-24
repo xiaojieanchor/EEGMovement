@@ -179,7 +179,7 @@ class Workbench(QtWidgets.QMainWindow):
         self.proxy_mode.setCurrentIndex(max(0,self.proxy_mode.findData(defaults.get('proxy_mode','auto'))));side.addWidget(self.proxy_mode)
         self.fields['proxy_url']=QtWidgets.QLineEdit(defaults.get('proxy_url',''));self.fields['proxy_url'].setPlaceholderText('http://127.0.0.1:7890');side.addWidget(self.fields['proxy_url'])
         self.proxy_mode.currentIndexChanged.connect(self.save_profile)
-        self.discover_button=MotionButton('发现本机EEG设备');self.discover_button.setToolTip('仅查询采集电脑本机的GDS共享设备，不搜索中枢');self.discover_button.clicked.connect(self.discover);side.addWidget(self.discover_button)
+        self.discover_button=MotionButton('发现本机EEG设备');self.discover_button.setToolTip('分层检查SDK、GDS服务及所有可见设备；未建立原厂会话的设备也会显示');self.discover_button.clicked.connect(self.discover);side.addWidget(self.discover_button)
         self.recover_button=MotionButton('补传已有记录');self.recover_button.clicked.connect(self.recover);side.addWidget(self.recover_button)
         self.reduce=QtWidgets.QCheckBox('减少界面动效');side.addWidget(self.reduce);side.addStretch()
         hint=label('本地优先保存\n断网可保留原始记录\n电极接触质量需另行验证','muted');hint.setWordWrap(True);side.addWidget(hint)
@@ -192,6 +192,9 @@ class Workbench(QtWidgets.QMainWindow):
         self.cancel_enrollment_button.clicked.connect(self.cancel_enrollment)
         self.probe_button.clicked.connect(self.probe);self.start_button.clicked.connect(self.begin);self.stop_button.clicked.connect(self.stop);actions.addStretch()
         self.status_text=label('等待原厂共享会话','muted');self.status_text.setWordWrap(True);self.status_text.setFixedHeight(38);self.status_text.setMinimumWidth(175);actions.addWidget(self.status_text);body.addLayout(actions)
+        self.device_diagnosis=None
+        self.device_status=label('本机设备尚未检测 · 点击“发现本机EEG设备”检查SDK、GDS与原厂会话。','muted')
+        self.device_status.setWordWrap(True);self.device_status.setAccessibleName('本机EEG设备诊断');body.addWidget(self.device_status)
         pairing_panel=QtWidgets.QFrame();pairing_panel.setObjectName('panel');pairing_box=QtWidgets.QVBoxLayout(pairing_panel);pairing_box.setContentsMargins(14,9,14,9);pairing_box.setSpacing(3)
         self.pairing_status=label('等待自动连接中枢','heading');self.pairing_status.setWordWrap(True);pairing_box.addWidget(self.pairing_status)
         self.pairing_help=label('设备类型：EEG采集端。启动后自动等待中枢并保存本机身份，无需配对文件或连接码。','muted');self.pairing_help.setWordWrap(True);pairing_box.addWidget(self.pairing_help);body.addWidget(pairing_panel)
@@ -355,15 +358,23 @@ class Workbench(QtWidgets.QMainWindow):
             except BaseException as error:self.jobs.put((None,None,str(error)))
         threading.Thread(target=run,daemon=True).start()
     def discover(self):
-        from .worker import discover_devices
-        def done(groups):
-            serials=[d['serial'] for group in groups for d in group['devices'] if d['device_type']==3 and group['in_use']]
-            if len(serials)==1:self.fields['serial'].setText(serials[0])
-            self.events.add('采集','INFO','发现的共享设备：'+('、'.join(serials) or '无；请检查原厂采集及GDS服务'))
-            if len(serials)>1:QtWidgets.QMessageBox.information(self,'选择设备','请在设备序列号中填写本次设备：\n'+'\n'.join(serials))
+        from .diagnostics import diagnose_sdk
+        if self.busy or self.controller.running:return
         sdk_dir=self.fields['sdk_dir'].text().strip()
-        self.events.add('采集','INFO','正在独立进程中查询本机GDS共享EEG设备；这不是搜索中枢，不会启动或接管设备')
-        self.task(lambda:discover_devices({'sdk_dir':sdk_dir}),done)
+        serial=self.fields['serial'].text().strip()
+        self.device_status.setText('正在检查SDK、GDS服务和本机设备；尚未读取样本。')
+        def done(result):
+            self.device_diagnosis=result
+            devices=result.get('devices',[])
+            # Respect an explicitly selected serial, including a disconnected one.
+            selected=result.get('selected_serial') or (devices[0]['serial'] if len(devices)==1 else None)
+            if selected and not serial:self.fields['serial'].setText(selected)
+            visible='；'.join(d['serial']+('：原厂会话已存在' if d['in_use'] else '：设备已发现，未建立原厂会话') for d in devices)
+            self.device_status.setText((visible+'。 ' if visible else '')+result['message'])
+            self.events.add('采集','INFO' if result.get('ready_for_participant') else 'WARN',self.device_status.text())
+            self.save_profile()
+        self.events.add('采集','INFO','正在独立进程中检测本机GDS；显示全部可见设备，设备发现不等于共享权限或真实样本已确认。')
+        self.task(lambda:diagnose_sdk(sdk_dir,serial),done)
     def probe(self):
         collector=self.controller.collector
         if self.controller.running and collector:

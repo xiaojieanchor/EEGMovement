@@ -74,27 +74,77 @@ def make_cdef(header_dir):
             'typedef int int32_t;\n' + code)
 
 
-def _locate_sdk(sdk_dir):
-    root = Path(sdk_dir).expanduser().resolve(strict=True)
+def _locate_sdk(sdk_dir=None):
+    raw = os.fspath(sdk_dir).strip() if sdk_dir else str(
+        Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'gtec/gNEEDaccess Client API')
+    if len(raw) >= 2 and raw[0] == raw[-1] and raw[0] in ['"', "'"]:
+        raw = raw[1:-1].strip()
+    root = Path(os.path.expandvars(raw)).expanduser().resolve()
+    if not root.is_dir():
+        raise SDKError('sdk_directory_missing', f'原厂Client API目录不存在：{root}')
     candidates = [root, root / 'C', root / 'gNEEDaccess Client API' / 'C']
+    # Accept an x64 folder selected in the file picker as well.
+    if root.name.lower() == 'x64':
+        candidates.insert(0, root.parent)
     header_dir = next((p for p in candidates if (p / 'GDSClientAPI.h').is_file()
                        and (p / 'GDSClientAPI_gNautilus.h').is_file()), None)
     if header_dir is None:
-        raise SDKError('sdk_headers_missing', '未找到原厂C API头文件，请选择gNEEDaccess Client API目录。')
+        raise SDKError('sdk_headers_missing', '未找到原厂C API头文件，请选择gNEEDaccess Client API目录；仅有运行时DLL不足以绑定。')
     dll = (header_dir / 'x64' / 'GDSClientAPI.dll').resolve()
     if not dll.is_file():
         raise SDKError('sdk_dll_missing', '未找到原厂x64/GDSClientAPI.dll。')
     return header_dir, dll
 
+def query_service_status():
+    """Query the installed Windows service, without pywin32 or server fallback."""
+    if os.name != 'nt':
+        raise SDKError('platform_unsupported', '原厂接收端要求Windows x64。')
+    import ctypes
+    from ctypes import wintypes
+
+    class ServiceStatus(ctypes.Structure):
+        _fields_ = [(name, wintypes.DWORD) for name in
+                    ['service_type', 'state', 'controls', 'exit_code',
+                     'service_exit_code', 'checkpoint', 'wait_hint']]
+
+    api = ctypes.WinDLL('advapi32', use_last_error=True)
+    api.OpenSCManagerW.argtypes = [wintypes.LPCWSTR, wintypes.LPCWSTR, wintypes.DWORD]
+    api.OpenSCManagerW.restype = wintypes.HANDLE
+    api.OpenServiceW.argtypes = [wintypes.HANDLE, wintypes.LPCWSTR, wintypes.DWORD]
+    api.OpenServiceW.restype = wintypes.HANDLE
+    api.QueryServiceStatus.argtypes = [wintypes.HANDLE, ctypes.POINTER(ServiceStatus)]
+    api.QueryServiceStatus.restype = wintypes.BOOL
+    api.CloseServiceHandle.argtypes = [wintypes.HANDLE]
+    api.CloseServiceHandle.restype = wintypes.BOOL
+    manager = api.OpenSCManagerW(None, None, 1)  # SC_MANAGER_CONNECT only
+    if not manager:
+        error = ctypes.get_last_error()
+        raise SDKError('service_query_failed', f'无法查询Windows服务管理器（错误{error}），不能断言GDS未运行。', native_code=error)
+    try:
+        service = api.OpenServiceW(manager, 'GDS', 4)  # SERVICE_QUERY_STATUS only
+        if not service:
+            error = ctypes.get_last_error()
+            code = 'service_not_installed' if error == 1060 else 'service_query_failed'
+            message = '未安装原厂GDS服务，请安装g.NEEDaccess。' if error == 1060 else '无法查询GDS服务状态，不能断言服务未运行。'
+            raise SDKError(code, f'{message}（Windows错误{error}）', native_code=error)
+        try:
+            status = ServiceStatus()
+            if not api.QueryServiceStatus(service, ctypes.byref(status)):
+                error = ctypes.get_last_error()
+                raise SDKError('service_query_failed', f'查询GDS服务状态失败（Windows错误{error}）。', native_code=error)
+            names = {1: 'stopped', 2: 'start_pending', 3: 'stop_pending', 4: 'running',
+                     5: 'continue_pending', 6: 'pause_pending', 7: 'paused'}
+            return {'name': 'GDS', 'state': int(status.state),
+                    'status': names.get(status.state, 'unknown')}
+        finally:
+            api.CloseServiceHandle(service)
+    finally:
+        api.CloseServiceHandle(manager)
+
 
 def _service_running():
-    """Do not load the standalone GDSServer.dll fallback used by pygds."""
-    try:
-        import win32serviceutil
-        return win32serviceutil.QueryServiceStatus('GDS')[1] == 4
-    except Exception:
-        return False
-
+    # A missing Python dependency must never masquerade as a stopped service.
+    return query_service_status()['state'] == 4
 
 def _sha(path):
     return hashlib.sha256(Path(path).read_bytes()).hexdigest()
@@ -351,16 +401,11 @@ class ParticipantReader:
         driver = self._driver()
         try:
             groups = driver.discover()
-            groups = [g for g in groups if any(d['device_type'] == 3 and
-                      (self.serial is None or d['serial'] == self.serial) for d in g['devices'])]
-            active = [g for g in groups if g['in_use']]
-            if not active:
-                raise SDKError('shared_session_absent', '没有原厂正在使用的共享会话；请先在原厂软件中配置并开始采集。')
-            if len(active) != 1:
-                raise SDKError('device_selection_required', '发现多台设备，请选择明确的g.Nautilus序列号。')
-            names = active[0]['devices']
-            if len(names) != 1 or names[0]['device_type'] != 3:
-                raise SDKError('unsupported_device_group', '当前版本只接收单台g.Nautilus共享会话，不改变原厂设备组。')
+            from .diagnostics import describe_devices
+            diagnosis = describe_devices(groups, self.serial)
+            if not diagnosis['ready_for_participant']:
+                raise SDKError(diagnosis['code'], diagnosis['message'])
+            names = diagnosis['selected_group']['devices']
             self.serial = names[0]['serial']
             self.handle, creator = driver.connect([self.serial])
             if creator:

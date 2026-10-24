@@ -12,11 +12,16 @@ def main():
     parser=argparse.ArgumentParser(description='EEGMovement g.Nautilus participant acquisition')
     parser.add_argument('--version',action='store_true');parser.add_argument('--smoke-test',action='store_true')
     parser.add_argument('--diagnose',action='store_true');parser.add_argument('--sdk-dir');parser.add_argument('--pairing')
+    parser.add_argument('--serial',help='Select an exact g.Nautilus serial')
+    parser.add_argument('--probe-stream',action='store_true',help='With --diagnose: briefly read an existing participant stream; no recording or forwarding')
+    parser.add_argument('--probe-seconds',type=float,default=2.,help='Stream check duration, 0.1 to 10 seconds')
     parser.add_argument('--ui-smoke-test',action='store_true',help='Render idle UI offscreen without SDK/network access')
     parser.add_argument('--audit',help='Read-only audit of a saved stream directory');parser.add_argument('--compare',help='Compare the same stream copied from the hub')
     parser.add_argument('--report-path',help='Write diagnosis/smoke result as UTF-8 JSON')
     parser.add_argument('--health-file',help='Installer startup receipt; no device is started')
     args=parser.parse_args()
+    if args.probe_stream and not args.diagnose:parser.error('--probe-stream requires --diagnose')
+    if not .1<=args.probe_seconds<=10:parser.error('--probe-seconds must be between 0.1 and 10')
     if args.compare and not args.audit:parser.error('--compare requires --audit')
     def emit(value):
         content=json.dumps(value,ensure_ascii=False)
@@ -53,11 +58,10 @@ def main():
             from .gui import load_enrollment
             try:s,_=connect_authenticated(load_enrollment(args.pairing));s.close();result['hub']='TLS and pairing accepted'
             except Exception as e:result['hub_error']=str(e)
-        if args.sdk_dir:
-            from .worker import discover_devices
-            try:result['device_groups']=discover_devices({'sdk_dir':args.sdk_dir})
-            except Exception as e:result['sdk_error']=str(e)
-        emit(result);return
+        from .diagnostics import diagnose_sdk
+        result.update(diagnose_sdk(args.sdk_dir,args.serial,probe_stream=args.probe_stream,seconds=args.probe_seconds))
+        emit(result)
+        raise SystemExit(0 if result['ok'] and 'hub_error' not in result else 2)
     from .gui import run_gui
     if sys.platform=='win32':
         import ctypes

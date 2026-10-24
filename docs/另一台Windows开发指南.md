@@ -24,6 +24,17 @@ py -3.13 -m venv .venv
 
 私人身份、缓存、配对状态和原始EEG在各电脑本地生成。Git不会同步这些文件，也不会同步个人录制或训练模型。
 
+## 本机设备诊断（1.1.6）
+
+完整操作见[采集端进度与连接诊断](采集端开发进度与连接诊断_20261024.md)。先在原厂图形 Demo 以非独占模式开始采集，保持其窗口运行。
+
+```powershell
+.\.venv\Scripts\python.exe -m gnautilus_acquisition --diagnose
+.\.venv\Scripts\python.exe -m gnautilus_acquisition --diagnose --probe-stream
+```
+
+发现设备不等于收到样本。诊断未就绪返回退出码2；可双击 scripts/start_acquisition.cmd 启动源码版。旧安装版快捷方式不会自动指向克隆目录。
+
 ## 中枢和计算服务开发
 
 仅开发采集端无需私有服务器配置。若需要在此电脑开发中枢：

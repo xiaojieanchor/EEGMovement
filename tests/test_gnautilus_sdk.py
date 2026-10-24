@@ -10,6 +10,19 @@ from gnautilus_acquisition.sdk import CffiDriver, ParticipantReader, SDKError, m
 from gnautilus_acquisition.worker import SDKWorker, discover_devices
 
 
+def supplied_headers():
+    """Vendor headers stay outside Git; installed SDK tests are optional on CI."""
+    import os
+    from gnautilus_acquisition.sdk import _locate_sdk
+    roots = [os.environ.get('EEGMOVEMENT_SDK_DIR'),
+             str(Path(__file__).resolve().parents[1] / 'programfile_gtec/gtec/gtec/gNEEDaccess Client API/C'),
+             str(Path(os.environ.get('ProgramFiles', 'C:/Program Files')) / 'gtec/gNEEDaccess Client API')]
+    for root in filter(None, roots):
+        try:return _locate_sdk(root)[0]
+        except (SDKError, OSError):pass
+    raise unittest.SkipTest('Vendor ABI check needs installed SDK or EEGMOVEMENT_SDK_DIR; proprietary headers are not distributed')
+
+
 def configuration():
     return {
         'SamplingRate': 512, 'NumberOfScans': 15, 'InputSignal': 0,
@@ -200,7 +213,7 @@ class SDKTests(unittest.TestCase):
 
     def test_cdef_tracks_supplied_abi_without_exposing_device_writes(self):
         import cffi
-        base = Path(__file__).resolve().parents[1] / 'programfile_gtec/gtec/gtec/gNEEDaccess Client API/C'
+        base = supplied_headers()
         text = make_cdef(base)
         self.assertNotIn('GDS_SetConfiguration(', text)
         self.assertNotIn('GDS_StartAcquisition(', text)
@@ -254,7 +267,7 @@ class NativeMarshallingTests(unittest.TestCase):
     """Real CFFI layouts and buffer ownership with a Python fake native surface."""
     def setUp(self):
         import cffi
-        base = Path(__file__).resolve().parents[1] / 'programfile_gtec/gtec/gtec/gNEEDaccess Client API/C'
+        base = supplied_headers()
         self.ffi = cffi.FFI()
         self.ffi.cdef(make_cdef(base))
         self.driver = CffiDriver.__new__(CffiDriver)
