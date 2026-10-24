@@ -48,9 +48,11 @@ class HubRelay:
             self.state['role_states']={r:dict(online=None) for r in ('eeg','quest')}
             self.state['onboarding']=dict(state='waiting_hub',message='等待中枢公网连接',pending_count=0)
         self.hub.intent_control.configure({'enabled':False})
-        self.hub.gnautilus_runtime.source_lost('public_relay_reconnected' if state['connected'] else 'public_relay_disconnected')
+        runtime=self.hub.gnautilus_runtime
+        if getattr(runtime,'active_transport',None)!='lan_ws':
+            runtime.source_lost('public_relay_reconnected' if state['connected'] else 'public_relay_disconnected')
         self.tickets.clear()
-        self.hub.event('公网转发'+('已认证，动作保持停止' if state['connected'] else '断开；记录与动作已停止'),'info' if state['connected'] else 'warn')
+        self.hub.event('公网转发'+('已认证，动作保持停止' if state['connected'] else '断开；公网动作停止')+('；热点采集独立保持' if getattr(runtime,'active_transport',None)=='lan_ws' else ''),'info' if state['connected'] else 'warn')
     def send(self,identity,kind,value,*,raw=False,**fields):
         peer=self.peers[identity];body=value if raw else encoded(value)
         return self.endpoint.send(kind,body,identity,peer['secret'],**fields)

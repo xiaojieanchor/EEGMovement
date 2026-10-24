@@ -169,7 +169,7 @@ class IngestService:
             except OSError:pass
             self.slots.release()
 
-    def ingest_external(self,agent,d,h,body,source_mark=None):
+    def ingest_external(self,agent,d,h,body,source_mark=None,*,transport='public_relay'):
         """Same durable journal for outbound relay; only fresh ticketed data may publish."""
         d=validate_descriptor(d);x=validate_block(h,body,d)
         if not HEX32.fullmatch(str(agent)):raise ValueError('Invalid agent identity')
@@ -194,9 +194,9 @@ class IngestService:
             if accepted:self.live_cursors[identity]=h['seq'],h['sample_start']+h['sample_count']
         if accepted:
             self.on_descriptor(d)
-            self.on_block(d,dict(h,hub_source_monotonic_ns=int(source_mark*1e9)),x)
+            self.on_block(d,dict(h,hub_source_monotonic_ns=int(source_mark*1e9),ingest_transport=transport),x)
             with self.lock:
-                self.last_live=source_mark;self.status.update(enabled=True,connected=True,state='receiving',descriptor=d,last_seq=h['seq'],last_sample_end=h['sample_start']+h['sample_count'],agent_id=agent,transport='public_relay')
+                self.last_live=source_mark;self.status.update(enabled=True,connected=True,state='receiving',descriptor=d,last_seq=h['seq'],last_sample_end=h['sample_start']+h['sample_count'],agent_id=agent,transport=transport)
         return dict(result,live_accepted=accepted)
 
     def snapshot(self):

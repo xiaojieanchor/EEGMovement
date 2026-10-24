@@ -225,7 +225,7 @@ class LanHubServer:
                         # The ticket predates this read. Include its full travel
                         # time and never clamp old samples into the live budget.
                         source_mark = issued - float(age) / 1000.0
-                    result = service.ingest_external(agent_id, d, b, body, source_mark)
+                    result = service.ingest_external(agent_id, d, b, body, source_mark, transport='lan_ws')
                     if result.get('live_accepted'):
                         with service.lock:
                             service.status['transport'] = 'lan_ws'

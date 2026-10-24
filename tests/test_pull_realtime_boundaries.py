@@ -30,7 +30,7 @@ def test_backfill_hole_is_not_replayed_as_live(tmp_path):
 def test_lan_ticket_is_a_conservative_age_bound():
     captured = []
     service = SimpleNamespace(selected_agent='c' * 32, lock=__import__('threading').RLock())
-    service.ingest_external = lambda agent, d, b, raw, mark: captured.append(mark) or dict(durable_seq=1, duplicate=False, live_accepted=False)
+    service.ingest_external = lambda agent, d, b, raw, mark, **kw: captured.append(mark) or dict(durable_seq=1, duplicate=False, live_accepted=False)
     runtime = SimpleNamespace(service=service, feedback=lambda: {})
     server = LanHubServer(runtime, port=-1)
     server.tickets[('c' * 32, 'ticket')] = 100.0

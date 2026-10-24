@@ -1,5 +1,7 @@
 """Direct Hotspot / LAN WebSocket client & auto-discovery for EEG acquisition."""
 import copy
+import bisect
+import queue
 import ipaddress
 import json
 import secrets
@@ -323,136 +325,167 @@ class LanWsReplicator(Replicator):
             self.enrollment['url'] = f"ws://{found['host']}:{found['port']}{found.get('ws_path') or LAN_WS_PATH}"
         return self.enrollment.get('url') or f"ws://{self.enrollment.get('host', '192.168.137.1')}:{self.enrollment.get('port', DEFAULT_LAN_WS_PORT)}{LAN_WS_PATH}"
 
+    def _next_block(self):
+        """Reserve oldest unsent fresh data, with a bounded acknowledgement window."""
+        with self.lock:
+            if len(self.pending) >= 8 or not self.ticket:
+                return None
+            durable = self.state['durable_seq']
+            now_ns = time.monotonic_ns()
+            with self.journal.lock:
+                numbers = self.journal.sequences
+                at = bisect.bisect_right(numbers, max(durable, self.live_scan_seq))
+                if not self.backfill_only:
+                    for seq in numbers[at:at + 64]:
+                        self.live_scan_seq = seq
+                        hdr = self.journal.records[seq]['header']
+                        if seq in self.pending or seq in self.acked:
+                            continue
+                        if source_age_ms(hdr, self.journal.descriptor['sampling_rate'], now_ns) < 180:
+                            header, body = self.journal.read(seq)
+                            self.pending[seq] = time.monotonic()
+                            self.last_live_seq = seq
+                            return header, body, 'live'
+                    # Continue a bounded scan without sending history ahead of
+                    # fresh candidates beyond this slice.
+                    if at + 64 < len(numbers):
+                        return None
+                # At most two history blocks may be in flight. They never
+                # consume the six slots reserved for fresh EEG.
+                if len(self.pending) >= 2:
+                    return None
+                at = bisect.bisect_right(numbers, durable)
+                for seq in numbers[at:at + 64]:
+                    hdr = self.journal.records[seq]['header']
+                    if seq in self.pending or seq in self.acked:
+                        continue
+                    if not self.backfill_only and source_age_ms(hdr, self.journal.descriptor['sampling_rate'], now_ns) < 180:
+                        continue
+                    header, body = self.journal.read(seq)
+                    self.pending[seq] = time.monotonic()
+                    return header, body, 'backfill'
+        return None
+
+    def _receive(self, ws, broken, errors):
+        try:
+            while not self.stop_event.is_set() and not broken.is_set():
+                try:
+                    raw = ws.recv(timeout=.2)
+                except TimeoutError:
+                    continue
+                reply, _ = unpack(raw) if isinstance(raw, bytes) else (json.loads(raw), b'')
+                kind = reply.get('kind')
+                if kind not in ('ack', 'status_ok', 'capture_ack', 'closed'):
+                    raise ValueError('Unsupported LAN WebSocket acknowledgement')
+                with self.lock:
+                    if kind == 'ack':
+                        seq = reply.get('ack_seq')
+                        if seq not in self.pending:
+                            raise ValueError('Mismatched LAN WebSocket block acknowledgement')
+                        sent_at = self.pending.pop(seq)
+                        self.acked.add(seq)
+                        self.state['durable_seq'] = max(self.state['durable_seq'], reply['durable_seq'])
+                        self.acked = {n for n in self.acked if n > self.state['durable_seq']}
+                        self.state['cloud_blocks'] = self.state['durable_seq']
+                        self.state['live_accepted'] += bool(reply.get('live_accepted'))
+                        self.state['ack_rtt_ms'] = round((time.monotonic() - sent_at) * 1000, 2)
+                        self.state['inflight_blocks'] = len(self.pending)
+                    self.ticket = reply.get('ticket') or self.ticket
+                    self.last_hub = time.monotonic()
+                    self.state['hub_online'] = True
+                self._feedback(reply)
+        except Exception as error:
+            if not self.stop_event.is_set():
+                errors.append(error)
+            broken.set()
+
     def _run(self):
         while not self.stop_event.is_set():
             ws = None
+            reader = None
+            broken = threading.Event()
+            errors = []
             try:
                 url = self._resolve_url()
                 ws = connect(url, open_timeout=2.5, close_timeout=1, max_size=8 * 1024 * 1024, compression=None)
-                try:
-                    sock = getattr(ws, 'socket', None)
-                    if sock is not None:
-                        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-                except Exception:
-                    pass
-                path_str = f"热点/局域网 WebSocket ({self.enrollment.get('host')}:{self.enrollment.get('port')})"
+                self.socket = getattr(ws, 'socket', None)
+                if self.socket is not None:
+                    self.socket.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
                 self.on_event('热点直连', 'INFO', f'已连接中枢热点 WebSocket ({url})，正在同步流描述')
                 ws.send(pack(dict(kind='descriptor', agent_id=self.enrollment['agent_id'], descriptor=self.journal.descriptor)))
-                raw = ws.recv(timeout=3.0)
-                r, _ = unpack(raw) if isinstance(raw, bytes) else (json.loads(raw), b'')
-                if r.get('kind') != 'descriptor_ok':
-                    raise ValueError('中枢未接受流描述：' + str(r))
-                self.ticket = r.get('ticket')
-                self.last_hub = time.monotonic()
+                raw = ws.recv(timeout=3)
+                reply, _ = unpack(raw) if isinstance(raw, bytes) else (json.loads(raw), b'')
+                if reply.get('kind') != 'descriptor_ok':
+                    raise ValueError('中枢未接受流描述')
                 with self.lock:
-                    self.state.update(
-                        connected=True,
-                        hub_online=True,
-                        durable_seq=r['durable_seq'],
-                        cloud_blocks=r['durable_seq'],
-                        error=None,
-                        path=path_str,
-                    )
-                self._feedback(r)
-                self.acked.clear()
-                self.last_live_seq = r['durable_seq']
-                heartbeat = time.monotonic()
-                last_health = 0.0
-                while not self.stop_event.is_set():
-                    while not self.capture_events.empty():
+                    self.ticket = reply.get('ticket')
+                    self.last_hub = time.monotonic()
+                    self.pending = {}
+                    self.acked.clear()
+                    self.live_scan_seq = self.last_live_seq = reply['durable_seq']
+                    self.state.update(connected=True, hub_online=True, durable_seq=reply['durable_seq'],
+                                      cloud_blocks=reply['durable_seq'], error=None, inflight_blocks=0)
+                self._feedback(reply)
+                reader = threading.Thread(target=self._receive, args=(ws, broken, errors), daemon=True, name='LAN acknowledgements')
+                reader.start()
+                last_health = last_telemetry = 0.
+                while not self.stop_event.is_set() and not broken.is_set():
+                    now = time.monotonic()
+                    with self.lock:
+                        if any(now - started > 3 for started in self.pending.values()):
+                            raise TimeoutError('热点数据确认超时；保留本地记录后重连')
+                        self.state['hub_online'] = now - self.last_hub < 1.5
+                    # Control messages share the ordered socket but never wait
+                    # for an individual block round trip on the sending thread.
+                    for _ in range(8):
                         try:
                             ev = self.capture_events.get_nowait()
-                        except Exception:
+                        except queue.Empty:
                             break
                         ws.send(pack(dict(kind='capture_event', agent_id=self.enrollment['agent_id'], event=ev)))
-                        raw_cr = ws.recv(timeout=2.5)
-                        cr, _ = unpack(raw_cr) if isinstance(raw_cr, bytes) else (json.loads(raw_cr), b'')
-                        if cr.get('kind') == 'capture_ack':
-                            self.ticket = cr.get('ticket') or self.ticket
-                            self.last_hub = heartbeat = time.monotonic()
-                            self._feedback(cr)
-                    now = time.monotonic()
-                    if now - last_health >= 0.5:
-                        health = self.health_provider() if self.health_provider else dict(
-                            sdk_state='backfill' if self.backfill_only else 'closed' if self.journal.closed else 'receiving',
-                            disk_state='durable',
-                            queue_blocks=0,
-                            error=None,
-                        )
+                    if now - last_health >= .1:
+                        detailed = self.health_provider is not None and now - last_telemetry >= .5
+                        health = self.health_provider() if detailed else dict(
+                            sdk_state='backfill' if self.backfill_only else 'receiving', disk_state='durable')
+                        if detailed:
+                            last_telemetry = now
                         ws.send(pack(dict(health, kind='status', agent_id=self.enrollment['agent_id'], stream_id=self.journal.descriptor['stream_id'])))
-                        raw_sr = ws.recv(timeout=2.5)
-                        sr, _ = unpack(raw_sr) if isinstance(raw_sr, bytes) else (json.loads(raw_sr), b'')
-                        if sr.get('kind') == 'status_ok':
-                            self.ticket = sr.get('ticket') or self.ticket
-                            self.last_hub = heartbeat = last_health = time.monotonic()
-                            self._feedback(sr)
-                    with self.journal.lock:
-                        maximum = max(self.journal.records, default=0)
-                        seq = None
-                        mode = 'backfill'
-                        if maximum > self.last_live_seq and not self.backfill_only:
-                            h, body = self.journal.read(maximum)
-                            if source_age_ms(h, self.journal.descriptor['sampling_rate']) < 180:
-                                seq = maximum
-                                mode = 'live'
-                                self.last_live_seq = seq
-                        if seq is None:
-                            candidate = self.state['durable_seq'] + 1
-                            while candidate in self.acked:
-                                candidate += 1
-                            if candidate in self.journal.records:
-                                seq = candidate
-                                h, body = self.journal.read(seq)
-                    if seq is None:
-                        if time.monotonic() - heartbeat >= 0.08:
-                            ws.send(pack(dict(kind='status', agent_id=self.enrollment['agent_id'], sdk_state='receiving', disk_state='durable')))
-                            raw_hb = ws.recv(timeout=2.0)
-                            hb, _ = unpack(raw_hb) if isinstance(raw_hb, bytes) else (json.loads(raw_hb), b'')
-                            if hb.get('kind') == 'status_ok':
-                                self.ticket = hb.get('ticket') or self.ticket
-                                self.last_hub = heartbeat = time.monotonic()
-                                self._feedback(hb)
-                        if hasattr(self.journal, 'new_data'):
-                            self.journal.new_data.wait(0.005)
-                            self.journal.new_data.clear()
-                        else:
-                            self.stop_event.wait(0.005)
+                        last_health = now
+                    item = self._next_block()
+                    if item is not None:
+                        header, body, mode = item
+                        age = source_age_ms(header, self.journal.descriptor['sampling_rate'])
+                        if mode == 'live' and age >= 180:
+                            with self.lock:
+                                self.pending.pop(header['seq'], None)
+                            continue
+                        block = dict(header, mode=mode, ticket=self.ticket, source_age_ms=age)
+                        ws.send(pack(dict(kind='block', agent_id=self.enrollment['agent_id'], block=block), body))
+                        with self.lock:
+                            self.state['sent_blocks'] += 1
+                            self.state['inflight_blocks'] = len(self.pending)
                         continue
-                    block_hdr = dict(h, mode=mode, ticket=self.ticket, source_age_ms=source_age_ms(h, self.journal.descriptor['sampling_rate']))
-                    ws.send(pack(dict(kind='block', agent_id=self.enrollment['agent_id'], block=block_hdr), body))
-                    raw_ack = ws.recv(timeout=2.5)
-                    ack, _ = unpack(raw_ack) if isinstance(raw_ack, bytes) else (json.loads(raw_ack), b'')
-                    if ack.get('kind') != 'ack' or ack.get('ack_seq') != seq:
-                        raise ValueError('Mismatched LAN WebSocket block acknowledgement')
-                    self.acked.add(seq)
-                    self.ticket = ack.get('ticket') or self.ticket
-                    self.last_hub = heartbeat = time.monotonic()
-                    self._feedback(ack)
-                    with self.lock:
-                        self.state.update(
-                            durable_seq=ack['durable_seq'],
-                            cloud_blocks=max(self.state.get('cloud_blocks', 0), ack['durable_seq'], len(self.acked)),
-                            hub_online=True,
-                        )
-                        self.state['sent_blocks'] += 1
-                        self.state['live_accepted'] += bool(ack.get('live_accepted'))
-                    self.acked = {n for n in self.acked if n > ack['durable_seq']}
-                try:
-                    ws.send(pack(dict(kind='close', agent_id=self.enrollment['agent_id'])))
-                    ws.recv(timeout=1.0)
-                except Exception:
-                    pass
+                    self.stop_event.wait(.002)
+                if errors:
+                    raise errors[0]
             except Exception as error:
                 with self.lock:
                     self.state.update(connected=False, hub_online=False, error=f'{type(error).__name__}: {error}'[:200])
                 if not self.stop_event.is_set():
-                    self.on_event('热点直连', 'WARN', '热点／局域网 WebSocket 连接中断：' + str(error)[:160] + '；本地记录保留，正在重连')
+                    self.on_event('热点直连', 'WARN', str(error)[:160] + '；本地记录保留，正在重连')
             finally:
+                broken.set()
                 if ws is not None:
                     try:
                         ws.close()
                     except Exception:
                         pass
-            self.stop_event.wait(0.5)
+                if reader is not None:
+                    reader.join(3)
+                    if reader.is_alive():
+                        self.state['error'] = '热点确认线程未退出，停止重连并保留本地记录'
+                        self.stop_event.set()
+                self.socket = None
+            self.stop_event.wait(.5)
         with self.lock:
             self.state.update(connected=False, hub_online=False)

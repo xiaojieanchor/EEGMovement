@@ -40,6 +40,7 @@ class GnautilusRuntime:
     def __init__(self,hub,root,*,port=8767,lan_ws_port=DEFAULT_LAN_WS_PORT):
         self.hub,self.root=hub,root;self.descriptor=None;self.last_seq=None;self.last_counter=None;self.received_blocks=0;self.last_close=None
         self.last_accept_monotonic=0.0
+        self.active_transport=None;self.gap_count=0;self.last_gap=None
         self.service=IngestService(root,self.accept,on_descriptor=self.describe,on_state=self.connection_state,on_capture_event=self.client_capture_event,get_hub_state=self.feedback,port=port)
         self.lan_ws=LanHubServer(self,port=lan_ws_port)
         self.feedback_boot_id=secrets.token_hex(8);self.feedback_logs=collections.deque(maxlen=20);self.feedback_log_seq=0
@@ -68,7 +69,8 @@ class GnautilusRuntime:
                 vr_online=sum(bool(p.get('online')) for p in peers),model_state=self.hub.intent.snapshot().get('inference_state','stopped') if hasattr(self.hub,'ml') else 'not_configured',motion_state=self.execution()['state'],
                 contact_quality_known=False,source_fresh=self.fresh(),hub_utc_ns=time.time_ns(),
                 log_boot_id=self.feedback_boot_id,logs=list(self.feedback_logs),
-                source_age_ms=round((time.monotonic()-self.hub.last_packet)*1000,2) if self.hub.last_packet is not None else None,last_source_loss=self.last_source_loss)
+                source_age_ms=round((time.monotonic()-self.hub.last_packet)*1000,2) if self.hub.last_packet is not None else None,last_source_loss=self.last_source_loss,
+                active_transport=self.active_transport,gap_count=self.gap_count,last_gap=self.last_gap)
     def _tick(self):
         while not self.stop_event.wait(.1):
             try:
@@ -105,6 +107,8 @@ class GnautilusRuntime:
             if len(values):self.last_counter=float(values[-1])
         gap=self.last_seq is not None and (header['seq']!=self.last_seq+1 or header['sample_start']!=h.sample_index or counter_gap)
         if gap:
+            self.gap_count+=1;self.last_gap=dict(previous_seq=self.last_seq,received_seq=header['seq'],expected_sample_start=h.sample_index,
+                received_sample_start=header['sample_start'],counter_gap=counter_gap,time_ns=time.time_ns(),transport=header.get('ingest_transport'))
             self.source_lost('source_changed')
             with h.lock:h.epoch+=1;h.raw.clear();h.filtered.clear();h.notched.clear()
         now=time.monotonic();eeg=[i for i,c in enumerate(d['channels']) if c['kind']=='EEG']
@@ -121,6 +125,7 @@ class GnautilusRuntime:
                 device_valid=device_valid,finite_eeg=bool(np.all(finite)),counter_continuity=('gap' if counter_gap else 'observed') if counter_columns else 'unknown',
                 checked_monotonic=now,reasons=['electrode_contact_not_measured'],formal_training_ready=False)
             self.last_seq=header['seq'];self.received_blocks+=1;self.last_accept_monotonic=now
+            self.active_transport=header.get('ingest_transport','tls_ingest')
             with h.record_lock:
                 if h.recorder:
                     h.recorder.append_block(header,x);h.recording_samples+=len(x)
@@ -247,7 +252,7 @@ class GnautilusRuntime:
                 connected=bool(fresh),fresh=fresh,age_ms=round((time.monotonic()-h.last_packet)*1000,2) if h.last_packet else None,
                 nominal_sfreq=fs,configured_sfreq=fs,sfreq_measured=None,sampling_rate_source='device_configuration',samples_total=h.sample_index,source_epoch=h.epoch,
                 stream_id=d['stream_id'] if d else None,source_kind=d['source_kind'] if d else None,sequence=self.last_seq,
-                continuous_samples=len(h.raw),endpoint='TLS ingest :'+str(self.service.port),error=self.error or ingest.get('error'),stats={}),
+                continuous_samples=len(h.raw),endpoint='LAN WebSocket :'+str(self.lan_ws.port) if self.active_transport=='lan_ws' else 'TLS ingest :'+str(self.service.port),error=self.error or ingest.get('error'),stats=dict(gap_count=self.gap_count,last_gap=self.last_gap,active_transport=self.active_transport)),
                 quality=quality,processing=dict(causal=True,bandpass='原厂配置',notch='原厂配置',window_ms=None,hop_ms=None,
                     channel_names=[c['name'] for c in channels],montage_verified=d.get('layout_verified',False) if d else False,filter_applied_by_hub=False),
                 server=h.remote.snapshot() if hasattr(h,'ml') else dict(ssh_connected=False,worker_connected=False,last_health=None,health_age_ms=None),result=None,result_age_ms=None,result_fresh=False,
