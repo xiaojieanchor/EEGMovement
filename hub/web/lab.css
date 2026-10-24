@@ -1,0 +1,169 @@
+:root{font-family:"Segoe UI","Microsoft YaHei",sans-serif;color:#203d44;background:#eff4f2;font-size:14px;--teal:#16877c;--muted:#80928f;--line:#dfe8e4}*{box-sizing:border-box}body{margin:0}main{max-width:1520px;margin:auto;padding:34px 36px 0}header{display:flex;justify-content:space-between;align-items:center;margin-bottom:26px}.back{font-size:12px;color:#67847b;text-decoration:none;display:inline-block;margin-bottom:25px}.eyebrow{font-size:10px;font-weight:600;letter-spacing:2px;color:#8a9d94;margin-bottom:9px}h1{font-size:32px;font-weight:600;letter-spacing:-1px;line-height:1.5;margin:0}h1>span{color:#738e82}header p{margin:6px 0 0;color:var(--muted);font-size:12px}h2{font-size:16px;font-weight:600;margin:0}button{font:inherit;cursor:pointer}button:disabled{opacity:.4;cursor:default}button:focus-visible,a:focus-visible{outline:3px solid #79bda7;outline-offset:4px}.button{background:white;border:1px solid #cfdcd5;border-radius:7px;color:#315649;font-size:12px;padding:11px 16px;transition:background .15s}.button:hover:not(:disabled){background:#e7f2ec;border-color:#86b6a2}.head-actions{display:flex;align-items:center;gap:18px}.online{font-size:11px;color:#94a29c}.online.good{color:var(--teal)}.online:before{content:"";display:inline-block;vertical-align:2px;height:6px;width:6px;border-radius:50%;background:currentColor;margin-right:8px}.notice{background:#fffaf0;border:1px solid #e5dac1;border-radius:8px;padding:15px 18px;display:flex;align-items:center;gap:14px}.notice-icon{font:14px Georgia;color:#a78a4e;border:1px solid #baa06b;width:21px;height:21px;display:grid;place-items:center;border-radius:50%;flex-shrink:0}.notice strong{font-size:12px;font-weight:600;color:#8f703a}.notice p{font-size:11px;color:#9a8e75;margin:5px 0 0;line-height:1.6}.tag{font:10px Consolas,monospace;letter-spacing:1px;background:#f3e7cd;color:#9b793b;border-radius:4px;padding:5px 8px;white-space:nowrap}.notice>.tag{margin-left:auto}.tag.neutral{background:#edf3ef;color:#759287}.chain{display:flex;justify-content:space-between;align-items:center;padding:20px 24px;border-radius:8px;background:#fff;border:1px solid var(--line);margin:18px 0 24px}.chain article{display:flex;align-items:center;gap:10px}.chain small{display:block;color:#9baba3;font-size:9px;letter-spacing:1px}.chain strong{display:block;font-size:12px;margin-top:5px;font-weight:500}.chain i{height:7px;width:7px;background:#c8d2cd;border-radius:50%;box-shadow:0 0 0 4px #f2f5f3}.chain i.good{background:#3ca68c;box-shadow:0 0 0 4px #edf7f0}.chain>span{color:#c1cec5}.workspace{display:grid;grid-template-columns:minmax(0,1fr) 328px;gap:22px;align-items:start}.scene-panel{position:relative;background:#f8fbf9;border:1px solid var(--line);border-radius:10px;overflow:hidden}.scene-top{display:flex;align-items:center;justify-content:space-between;padding:25px 25px 5px;gap:12px}.scene-top p{font-size:10px;color:#8ba197;margin-top:7px;line-height:1.8}.scene-panel canvas{width:100%;height:610px;display:block}.scene-footer{display:flex;justify-content:space-between;align-items:center;border-top:1px solid #e5ede7;padding:15px 24px;color:#88a093;font-size:10px;gap:10px}.trail-key{display:inline-block;background:#60af94;width:16px;height:2px;vertical-align:3px;margin-right:7px}.mono{font-family:Consolas,monospace;font-variant-numeric:tabular-nums}.scene-empty{position:absolute;top:45%;left:0;right:0;text-align:center;pointer-events:none;background:#f8fbf9ba;padding:30px 15px}.scene-empty strong{font-size:18px;font-weight:500;color:#8ea598}.scene-empty p{font-size:11px;color:#9baba1;margin-top:10px}aside{display:grid;gap:17px}.card{background:white;border:1px solid var(--line);border-radius:9px;padding:22px}.state-line{display:flex;justify-content:space-between;align-items:center}.subtle{font:10px Consolas,monospace;color:#8fa295}.speed{padding:22px 0 16px;border-bottom:1px solid #eaf0eb}.speed>strong{font-size:40px;letter-spacing:-1px;line-height:1;font-weight:500;font-variant-numeric:tabular-nums}.speed>span{display:block;font-size:10px;color:#9aac9e;margin-top:9px}.details{margin-top:8px}.details>div{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 0;border-bottom:1px solid #f0f4ef;font-size:10px}.details>div>span{color:#8ca293}.details b{font:11px Consolas,monospace;font-weight:400;color:#476755;text-align:right}.reason{background:#f4f7f3;padding:10px 11px;margin-top:15px;font-size:10px;line-height:1.8;color:#7f998a;border-radius:5px}.controls p{font-size:11px;line-height:1.9;color:#8c9e92;margin:9px 0 13px}.direction-pad{display:grid;grid-template-columns:repeat(3,1fr);gap:7px;max-width:255px;margin:18px auto}.direction-pad .button{font-size:11px;padding:10px 3px}.forward{grid-column:2}.left{grid-column:1;grid-row:2}.stop{grid-column:2;grid-row:2;border-color:#d6b1a0;color:#a47257;background:#fffcf8}.right{grid-column:3;grid-row:2}.backward{grid-column:2;grid-row:3}.lease{text-align:center;font:10px Consolas,"Microsoft YaHei",sans-serif;color:#a49270;background:#fbf7ef;border-radius:4px;padding:9px}.controls .small-note,.small-note{font-size:10px;color:#9aac9e;line-height:1.9}.bottom-grid{display:grid;grid-template-columns:1fr 1fr;gap:22px;margin-top:22px}.check-row{display:flex;justify-content:space-between;gap:15px;padding:13px 0;border-bottom:1px solid #eef3ed;font-size:11px}.check-row:first-of-type{margin-top:14px}.check-row>span{color:#8aa090}.check-row b{font-weight:400;text-align:right;color:#5d7a65}.bottom-grid p{font-size:11px;color:#89a08f;line-height:1.8}.verification-list{display:flex;flex-wrap:wrap;gap:7px;margin:16px 0}.verification-chip{font-size:10px;background:#edf6ef;color:#639575;border:1px solid #dcecdf;border-radius:4px;padding:6px 9px}.verification-chip.fail{background:#fff0e7;color:#b47953;border-color:#ebd4c4}footer{display:flex;justify-content:space-between;font-size:10px;color:#a0b1a4;padding:24px 0}#toast{display:none;position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#284c3e;border-radius:7px;padding:13px 20px;color:white;font-size:12px;z-index:10;box-shadow:0 8px 30px #193e3a22;max-width:90vw;line-height:1.6}#toast.visible{display:block}@media(max-width:1050px){main{padding:25px 22px 0}.workspace{grid-template-columns:minmax(0,1fr) 285px;gap:15px}.card{padding:18px}.scene-panel canvas{height:590px}h1{font-size:27px}.head-actions{flex-direction:column;align-items:flex-end;gap:12px}.scene-top{padding-left:20px;padding-right:20px}}@media(max-width:780px){main{padding:20px 15px 0}.workspace{grid-template-columns:1fr}.scene-panel canvas{height:400px}aside{grid-template-columns:1fr 1fr;align-items:start}.bottom-grid{grid-template-columns:1fr}.chain{padding:17px;gap:10px;flex-wrap:wrap}.chain>span{display:none}.chain article{width:44%}.notice>.tag{display:none}h1{font-size:25px}.head-actions>.online{display:none}.scene-top p{max-width:260px}.scene-footer{padding:13px 17px;font-size:9px}}@media(max-width:520px){header{align-items:flex-start}.head-actions{margin-top:12px}.head-actions .button{font-size:10px;padding:10px 8px}h1{font-size:23px}h1>span{display:block}.back{margin-bottom:19px}aside{grid-template-columns:1fr}.scene-panel canvas{height:350px}.scene-top{padding:20px 17px 0}.scene-top .tag{font-size:9px}.scene-footer{flex-direction:column;align-items:flex-start}.notice{padding:13px;align-items:flex-start}.check-row{font-size:10px}.card{padding:20px}footer{gap:15px;line-height:1.6}.chain strong{font-size:11px}}
+
+.lab-channel.quality-pink{border-color:#e0a5b8;background:#fff6f9}.lab-channel.quality-blue{border-color:#86bfc5;background:#f2fafb}.lab-channel.quality-amber{border-color:#ddc58f;background:#fffaf0}
+
+.lab-signal{margin:22px 0}.lab-signal .panel-heading,.lab-wave-heading{display:flex;justify-content:space-between;align-items:center;gap:18px;flex-wrap:wrap}.lab-signal h2{font-size:22px}.lab-signal-metrics{display:flex;gap:12px;flex-wrap:wrap;margin:18px 0;color:#49645c}.lab-signal-metrics span{padding:8px 12px;background:#f1f6f3;border-radius:10px}.lab-channel-grid{display:grid;grid-template-columns:repeat(7,minmax(0,1fr));gap:10px}.lab-channel{border:1px solid #e1e9e4;border-radius:14px;padding:14px 10px;min-width:0;overflow-wrap:anywhere}.lab-channel strong,.lab-channel small,.lab-channel span{display:block}.lab-channel strong{font-size:15px}.lab-channel small{margin:9px 0;line-height:1.5;color:#62786e}.lab-channel span{font-size:11px;line-height:1.6;color:#6b7e75}.lab-channel.quality-green{border-color:#93c8ac;background:#f2faf5}.lab-channel.quality-gray{background:#f4f6f5}.lab-channel.quality-red,.lab-channel.quality-pink{border-color:#e0a5b8;background:#fff6f9}.lab-channel.quality-blue{border-color:#86bfc5;background:#f2fafb}.lab-channel.quality-yellow,.lab-channel.quality-amber{border-color:#ddc58f;background:#fffaf0}.lab-wave-heading{margin-top:24px}.lab-wave-heading h3{margin:0}.lab-wave-heading p{font-size:12px;color:#65776f}.segmented{display:flex;gap:4px;padding:4px;background:#edf2ef;border-radius:12px}.segmented button{border:0;padding:9px 12px;border-radius:9px;background:transparent;color:#52675c;cursor:pointer}.segmented button.selected{background:#fff;box-shadow:0 1px 6px #16352215;color:#216a51}#labWave{width:100%;height:350px;display:block;margin-top:12px}#labGpuCards{display:flex;gap:12px;flex-wrap:wrap;margin:12px 0;color:#567265;font-size:12px}#labGpuCards span{background:#f1f6f3;padding:10px 14px;border-radius:10px}
+.intent-panel .panel-heading{display:flex;justify-content:space-between;align-items:flex-start;gap:16px}.intent-panel #intentModel{overflow-wrap:anywhere;line-height:1.6;font-size:12px}.intent-validation{font-size:13px;line-height:1.7;color:#855c26;background:#fff8eb;padding:13px 16px;border-radius:12px}.intent-motion{border-top:1px solid #e4ebe7;margin-top:25px;padding-top:20px}.intent-motion h3{font-size:17px}.intent-motion p{font-size:13px;line-height:1.7;color:#65796f}.intent-actions label{display:flex;gap:7px;align-items:center;font-size:12px}.intent-actions input{width:76px;border:1px solid #cad8cf;border-radius:9px;padding:10px;background:#fff}.intent-actions .primary-action{background:#267d5a;color:#fff}#intentState{font-size:13px;align-self:center}.intent-panel .eyebrow{font-size:10px}@media(max-width:1100px){.lab-channel-grid{grid-template-columns:repeat(4,minmax(0,1fr))}}@media(max-width:600px){.lab-channel-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.intent-panel .panel-heading{flex-direction:column}.lab-signal-metrics{gap:6px;font-size:11px}.segmented button{font-size:11px;padding:8px}#labWave{height:330px}.lab-channel{padding:12px}.intent-validation{padding:10px}.intent-actions input{width:65px}.intent-panel{margin-top:20px}.intent-summary{gap:8px}}
+
+/* EEGMovement live console — scoped to /lab; shared navigation stays stable. */
+.studio.inference-dashboard{background:#eef2f7;color:#1d3048}
+.studio.inference-dashboard main{max-width:none;padding:0 24px 16px}
+.studio.inference-dashboard .workspace-nav{margin:0 -24px 12px;padding:0 24px;height:54px;min-height:54px;width:calc(100% + 48px)}
+.studio.inference-dashboard .console-heading.studio-hero{min-height:0;background:none;border:0;box-shadow:none;padding:0;margin:0 0 12px;display:flex;align-items:center;gap:20px;border-radius:0;color:#1d3048;overflow:visible}
+.studio.inference-dashboard .console-heading .hero-art{display:none}
+.studio.inference-dashboard .console-heading .eyebrow{font-size:9px;letter-spacing:1.5px;color:#657a94;margin:0 0 3px}
+.studio.inference-dashboard .console-heading h1{font-size:24px;letter-spacing:-.5px;line-height:1.3;color:#142a45;margin:0}
+.studio.inference-dashboard #consoleControls{margin-left:auto}
+.studio.inference-dashboard .console-switches{display:flex;gap:8px}
+.studio.inference-dashboard .console-switches .button{min-width:114px;min-height:40px;padding:9px 18px;font-weight:600;font-size:12px;border-radius:9px}
+.studio.inference-dashboard #intentStart{background:#235fe5;color:white;border-color:#235fe5}
+.studio.inference-dashboard #intentStart[data-enabled=true]{background:#fff;color:#254b86;border-color:#a5bbdd}
+.studio.inference-dashboard #intentEnable[data-enabled=true]{background:#e0f4ee;border-color:#7ab9a4;color:#13583f}
+.studio.inference-dashboard .online{font-size:11px;white-space:nowrap;color:#61768a}
+.studio.inference-dashboard .console-mode{display:flex;align-items:center;gap:10px;font-size:11px;color:#526b85;margin-bottom:8px}
+.studio.inference-dashboard .console-mode strong{font-weight:500}
+.studio.inference-dashboard .console-mode .tag{font-size:9px;padding:3px 7px;letter-spacing:.7px}
+.studio.inference-dashboard .chain{padding:10px 16px;margin:0 0 12px;border-radius:11px;gap:12px;box-shadow:none}
+.studio.inference-dashboard .chain article{gap:10px;min-width:0}
+.studio.inference-dashboard .chain small{font-size:9px;letter-spacing:.8px}
+.studio.inference-dashboard .chain strong{font-size:11px;margin-top:2px;white-space:nowrap}
+.studio.inference-dashboard .inference-board{display:grid;grid-template-columns:minmax(350px,.95fr) minmax(390px,1.18fr);gap:14px;align-items:start}
+.studio.inference-dashboard #liveInference{min-width:0}
+.studio.inference-dashboard .intent-panel{padding:16px;margin:0;border:1px solid #d5dfeb;border-radius:14px;background:#fff;box-shadow:0 3px 10px #1a365608;min-width:0}
+.studio.inference-dashboard .console-model-heading{display:flex;align-items:center;justify-content:space-between;gap:10px;margin-bottom:8px}
+.studio.inference-dashboard .console-model-heading h2{font-size:14px;margin:2px 0 0;color:#1b3556}
+.studio.inference-dashboard .console-model-heading .eyebrow{font-size:8px;letter-spacing:1.5px;margin:0;color:#6682a3}
+.studio.inference-dashboard #intentSource{font-size:9px;letter-spacing:0;background:#edf3fe;color:#3c5f91;white-space:normal;text-align:right}
+.studio.inference-dashboard .console-state{display:flex;justify-content:space-between;align-items:center;gap:10px;margin:8px 0 10px;padding:7px 9px;background:#f3f6fa;border-radius:6px;color:#4b6481}
+.studio.inference-dashboard #intentState,.studio.inference-dashboard #intentControlState{font-size:10px;line-height:1.4;font-weight:500;margin:0;overflow-wrap:anywhere}
+.studio.inference-dashboard #intentControlState{max-width:62%;text-align:right;color:#61738a}
+.studio.inference-dashboard .training-input{margin:0 0 12px;border:1px solid #dbe3ee;border-radius:9px;background:#fff}
+.studio.inference-dashboard .input-tabs{padding:0 10px;gap:20px;border-bottom:1px solid #dbe3ee;background:#f7f9fd;position:relative}
+.studio.inference-dashboard .input-tabs button{min-height:38px;padding:9px 0;font-size:12px;border-radius:0;white-space:nowrap;box-shadow:none;color:#61718a;background:none}
+.studio.inference-dashboard .input-tabs button[aria-selected=true]{color:#235fe5;font-weight:600;background:none}
+.studio.inference-dashboard .training-input [role=tabpanel]{padding:10px}
+.studio.inference-dashboard .input-source-caption{display:none}
+.studio.inference-dashboard .lab-signal{margin:0;padding:0;border:0;box-shadow:none;border-radius:0}
+.studio.inference-dashboard .lab-signal>.panel-heading,.studio.inference-dashboard #labGpuCards,.studio.inference-dashboard .lab-signal>.small-note{display:none}
+.studio.inference-dashboard .lab-signal-metrics{display:flex;justify-content:space-between;gap:5px;margin:0 0 8px;padding:0;border:0;background:none;font-size:10px;color:#526b86}
+.studio.inference-dashboard .lab-signal-metrics span{padding:0;background:none;white-space:nowrap}
+.studio.inference-dashboard .lab-channel-grid{grid-template-columns:repeat(7,minmax(0,1fr));gap:4px}
+.studio.inference-dashboard .lab-channel{padding:6px 2px;text-align:center;position:relative;min-height:29px;border-radius:5px;border-color:#d6dfe8;background:#f4f6f9}
+.studio.inference-dashboard .lab-channel strong{font-size:10px;font-weight:600}
+.studio.inference-dashboard .lab-channel small,.studio.inference-dashboard .lab-channel span{display:none}
+.studio.inference-dashboard .lab-channel.quality-green{background:#e9f5ef;color:#256d54;border-color:#8cbca6}
+.studio.inference-dashboard .lab-channel.quality-red,.studio.inference-dashboard .lab-channel.quality-pink{background:#fff0f0;color:#a1484c;border-color:#d8a6a9}
+.studio.inference-dashboard .lab-channel.quality-yellow,.studio.inference-dashboard .lab-channel.quality-amber{background:#fff7e7;color:#8b6427;border-color:#d2b97d}
+.studio.inference-dashboard .lab-channel:last-child{grid-column:auto}
+.studio.inference-dashboard .lab-wave-heading{margin-top:8px;display:flex;flex-wrap:nowrap;gap:8px}
+.studio.inference-dashboard .lab-wave-heading h3{font-size:10px;font-weight:500;color:#526982;white-space:nowrap}
+.studio.inference-dashboard #labWaveMode{display:none}
+.studio.inference-dashboard .lab-wave-heading .segmented{margin:0 0 0 auto;gap:0;padding:2px;background:#f0f4f9;border-radius:5px}
+.studio.inference-dashboard .segmented button{font-size:9px;min-height:26px;padding:5px 8px;border-radius:4px}
+.studio.inference-dashboard #labWave{height:160px;margin:4px 0 0;background:#fff}
+.studio.inference-dashboard .input-test-heading{flex-direction:row;align-items:center;gap:6px}
+.studio.inference-dashboard .input-test-heading h3{font-size:11px;margin:0;font-weight:500;color:#405773}
+.studio.inference-dashboard .input-test-badge{font-size:9px;padding:4px 6px}
+.studio.inference-dashboard .input-test-layout{grid-template-columns:170px minmax(0,1fr);gap:14px;margin:10px 0 0;min-height:202px;align-items:center}
+.studio.inference-dashboard .input-test-pad{max-width:170px;width:100%;grid-template-rows:repeat(3,52px);gap:5px;margin:0}
+.studio.inference-dashboard .input-test-key{border-radius:8px;background:#f8faff;border-color:#cbd9ec;color:#315582}
+.studio.inference-dashboard .input-test-key span{font-size:19px}
+.studio.inference-dashboard .input-test-key b{font-size:10px}
+.studio.inference-dashboard .input-test-key.is-held{background:#235fe5;color:#fff;box-shadow:0 0 0 3px #235fe51a}
+.studio.inference-dashboard .input-test-info strong{font-size:12px;line-height:1.5;margin:0 0 7px;color:#3b5681}
+.studio.inference-dashboard .input-test-info p{font-size:10px;line-height:1.6;margin:6px 0;color:#61738d}
+.studio.inference-dashboard .input-test-info details{font-size:10px;color:#536a88;overflow-wrap:anywhere}
+.studio.inference-dashboard .input-test-info .input-test-hint{font-size:10px;margin:6px 0}
+.studio.inference-dashboard .training-input.is-testing{border-color:#c8a35c;background:#fffcf4}
+.studio.inference-dashboard .intent-summary{display:flex;align-items:center;justify-content:space-between;gap:8px;margin:8px 0}
+.studio.inference-dashboard .intent-summary strong{font-size:20px;line-height:1.3;letter-spacing:-.5px;color:#183d6c}
+.studio.inference-dashboard .intent-summary>span{font-size:10px;white-space:nowrap;color:#58718d;font-variant-numeric:tabular-nums}
+.studio.inference-dashboard .intent-grid{grid-template-columns:repeat(5,minmax(0,1fr));gap:5px}
+.studio.inference-dashboard .intent-score{padding:9px 7px;border-radius:6px;background:#f0f5fd;min-width:0}
+.studio.inference-dashboard .intent-score:first-child{grid-column:auto;background:#eaf1fb}
+.studio.inference-dashboard .intent-score label{display:flex;flex-direction:column;gap:5px;font-size:10px;color:#526b89}
+.studio.inference-dashboard .intent-score label b{font-size:16px;letter-spacing:-.5px;color:#244f91;font-variant-numeric:tabular-nums}
+.studio.inference-dashboard .intent-score progress{height:4px;margin:7px 0 0;display:block;accent-color:#386fe5}
+.studio.inference-dashboard .intent-score small{display:none}
+.studio.inference-dashboard .intent-score[hidden]{display:none}
+.studio.inference-dashboard .intent-note{font-size:10px;line-height:1.5;margin:8px 0 0;color:#617792;overflow-wrap:anywhere}
+.studio.inference-dashboard #intentAction:empty{display:none}
+.studio.inference-dashboard .intent-advanced{margin-top:10px;border-top:1px solid #e4eaf2;padding-top:10px;font-size:11px}
+.studio.inference-dashboard summary{cursor:pointer;min-height:24px;color:#3b5678;font-size:11px}
+.studio.inference-dashboard summary span{font-size:10px;color:#6d7f95;font-weight:400;margin-left:10px}
+.studio.inference-dashboard .intent-validation{font-size:11px;padding:10px;margin:8px 0;line-height:1.6}
+.studio.inference-dashboard .execution-column{min-width:0;position:sticky;top:66px;display:grid;gap:10px}
+.studio.inference-dashboard .scene-panel{border-radius:14px;border-color:#cfdae9;background:#f3f7fb;box-shadow:0 3px 10px #1a365608}
+.studio.inference-dashboard .scene-top{padding:14px 16px 0;align-items:center;gap:10px}
+.studio.inference-dashboard .scene-top h2{font-size:14px}
+.studio.inference-dashboard .scene-top .eyebrow,.studio.inference-dashboard .scene-top p{display:none}
+.studio.inference-dashboard .scene-top .tag{font-size:9px;letter-spacing:.5px;padding:4px 6px}
+.studio.inference-dashboard .scene-panel canvas{height:clamp(265px,calc(100svh - 450px),540px);width:100%}
+.studio.inference-dashboard .scene-footer{padding:11px 14px;background:#fff;border-color:#dce5f0;display:flex;flex-wrap:wrap;gap:7px;color:#576f8a}
+.studio.inference-dashboard .scene-footer>span:first-child{font-size:9px}
+.studio.inference-dashboard #pose{font-size:12px;letter-spacing:.3px;color:#234a78;font-weight:600}
+.studio.inference-dashboard .scene-empty{top:39%;padding:16px;background:#f2f7fae6}
+.studio.inference-dashboard .scene-empty strong{font-size:16px;color:#60798e}
+.studio.inference-dashboard .scene-empty p{font-size:10px;color:#687f94;margin:6px 0 0}
+.studio.inference-dashboard .applied-card{padding:13px 16px;border-radius:12px;box-shadow:none}
+.studio.inference-dashboard .applied-heading{display:flex;justify-content:space-between;align-items:center}
+.studio.inference-dashboard .applied-heading h2{font-size:12px;color:#2c546f}
+.studio.inference-dashboard .motion-meters{display:grid;grid-template-columns:1.2fr 1fr 1fr;gap:16px;align-items:center;margin:10px 0}
+.studio.inference-dashboard .motion-meters>div{border-right:1px solid #e1e8f1;min-width:0}
+.studio.inference-dashboard .motion-meters>div:last-child{border:0}
+.studio.inference-dashboard .motion-meters strong{display:block;font:600 19px/1.1 Consolas,monospace;color:#315779;white-space:nowrap}
+.studio.inference-dashboard .motion-meters span{display:block;font-size:9px;color:#607891;margin-top:5px}
+.studio.inference-dashboard .motion-meters .speed{padding:0;border-bottom:0}
+.studio.inference-dashboard .motion-meters .speed strong{font-size:30px;color:#194b9b}
+.studio.inference-dashboard .reason{margin:0;padding:7px 9px;font-size:10px;line-height:1.4;background:#f2f5f9;color:#526b85}
+.studio.inference-dashboard .console-drawers{margin-top:14px;display:grid;gap:8px}
+.studio.inference-dashboard .console-drawer{background:#f9fbfd;border:1px solid #d9e2ed;border-radius:9px;padding:10px 14px;min-width:0}
+.studio.inference-dashboard .console-drawer>summary{font-weight:600}
+.studio.inference-dashboard .console-drawer[open]>summary{margin-bottom:12px}
+.studio.inference-dashboard .intent-calibration{margin:0;padding:12px;background:#fff;border-radius:7px}
+.studio.inference-dashboard .intent-calibration h3{font-size:13px;margin:0}
+.studio.inference-dashboard .intent-calibration p{font-size:11px;line-height:1.6}
+.studio.inference-dashboard .receiver-tools{font-size:11px;overflow-wrap:anywhere}
+.studio.inference-dashboard #signalStaging{display:none}
+.studio.inference-dashboard footer{padding:14px 0 0;font-size:9px}
+.studio.inference-dashboard .control-feedback:empty{display:none}
+.studio.inference-dashboard .bottom-grid{margin:0;gap:12px}
+.studio.inference-dashboard .preparation{margin-top:12px}
+@media(min-width:1600px){.studio.inference-dashboard main{padding-left:30px;padding-right:30px}.studio.inference-dashboard #labWave{height:210px}.studio.inference-dashboard .scene-panel canvas{min-height:345px}.studio.inference-dashboard .input-test-layout{min-height:252px}.studio.inference-dashboard .intent-score label b{font-size:22px}}
+@media(max-width:1150px) and (min-width:901px){.studio.inference-dashboard main{padding-left:16px;padding-right:16px}.studio.inference-dashboard .inference-board{grid-template-columns:minmax(300px,.95fr) minmax(320px,1.1fr);gap:10px}.studio.inference-dashboard .intent-panel{padding:12px}.studio.inference-dashboard .console-heading{flex-wrap:wrap}.studio.inference-dashboard .online{display:none}.studio.inference-dashboard .input-test-layout{grid-template-columns:140px minmax(0,1fr);gap:8px}.studio.inference-dashboard .input-test-pad{grid-template-rows:repeat(3,46px)}.studio.inference-dashboard .chain strong{font-size:10px}.studio.inference-dashboard .chain{padding:10px}.studio.inference-dashboard .chain>span{display:none}}
+@media(max-width:900px){.studio.inference-dashboard main{margin-left:0;padding:0 16px 14px}.studio.inference-dashboard .workspace-nav{margin:0 -16px 12px;padding:0 16px}.studio.inference-dashboard .inference-board{grid-template-columns:minmax(300px,.95fr) minmax(320px,1.1fr)}.studio.inference-dashboard .console-heading .eyebrow{font-size:8px}}
+@media(max-width:700px){.studio.inference-dashboard main{padding:0 12px 12px}.studio.inference-dashboard .workspace-nav{margin:0 -12px 10px;padding:0 12px}.studio.inference-dashboard .console-heading.studio-hero{gap:12px;flex-wrap:wrap;margin-bottom:10px}.studio.inference-dashboard .console-heading h1{font-size:22px}.studio.inference-dashboard .online{display:none}.studio.inference-dashboard .console-switches .button{min-width:96px;padding:8px 12px;font-size:11px}.studio.inference-dashboard .chain{display:grid;grid-template-columns:1fr 1fr;padding:10px 12px;gap:10px}.studio.inference-dashboard .chain article{width:auto}.studio.inference-dashboard .chain>span{display:none}.studio.inference-dashboard .chain strong{font-size:10px;white-space:normal}.studio.inference-dashboard .inference-board{grid-template-columns:1fr;gap:12px}.studio.inference-dashboard .execution-column{position:static}.studio.inference-dashboard .intent-panel{padding:14px}.studio.inference-dashboard .scene-panel canvas{height:270px}.studio.inference-dashboard .console-drawer>summary span{display:block;margin-left:14px;margin-top:3px}.studio.inference-dashboard .bottom-grid{grid-template-columns:1fr}.studio.inference-dashboard .motion-meters strong{font-size:16px}.studio.inference-dashboard .motion-meters .speed strong{font-size:27px}}
+@media(prefers-reduced-motion:reduce){.studio.inference-dashboard *, .studio.inference-dashboard *::after{scroll-behavior:auto;animation:none!important;transition:none!important}}
+
+/* Compact console rhythm; no paragraph-sized gaps in the observation area. */
+.studio.inference-dashboard .console-mode{display:none}
+.studio.inference-dashboard .console-model-heading{min-height:30px}
+.studio.inference-dashboard .console-model-heading h2{line-height:1.3;margin:2px 0 0}
+.studio.inference-dashboard .console-model-heading .eyebrow{display:block;line-height:1.3}
+.studio.inference-dashboard #intentControlState{padding:0;background:none}
+.studio.inference-dashboard .lab-channel-grid{margin-top:0}
+.studio.inference-dashboard #intentAction:empty{margin:0}
+.studio.inference-dashboard .scene-panel canvas{height:clamp(260px,calc(100svh - 485px),540px)}
+.studio.inference-dashboard #modelSettingsMount .intent-advanced{margin:0;padding:10px 14px;border:1px solid #d9e2ed}
+@media(max-height:800px) and (min-width:701px){.studio.inference-dashboard #labWave{height:145px}.studio.inference-dashboard .input-test-layout{min-height:187px}}
+
+.studio.inference-dashboard .console-heading .eyebrow{display:block;line-height:1.2}
+.studio.inference-dashboard .chain small{line-height:1.2}
+.studio.inference-dashboard .chain strong{line-height:1.3}
+
+@media(max-width:900px){.studio.inference-dashboard .workspace-nav{width:calc(100% + 32px)}}
+@media(max-width:700px){.studio.inference-dashboard .workspace-nav{width:calc(100% + 24px)}}
+
+.studio.inference-dashboard .console-switches .button{background:#fff;border-color:#b6c6dc;color:#305782}
+.studio.inference-dashboard .console-heading .online.good{color:#23765e}
+.studio.inference-dashboard .console-heading .online{color:#526b85}
+
+/* Readable instrument annotations on light backgrounds. */
+.studio.inference-dashboard .eyebrow,.studio.inference-dashboard .console-heading .eyebrow,.studio.inference-dashboard .console-model-heading .eyebrow{color:#526b85}
+.studio.inference-dashboard #freshness,.studio.inference-dashboard summary span,.studio.inference-dashboard .intent-note{color:#526982}
+
+.studio.inference-dashboard .scene-panel[data-blocked=emergency]{border-color:#dc9a9f;box-shadow:0 0 0 2px #be3a4d15}
+.studio.inference-dashboard .scene-panel[data-blocked=emergency]+.applied-card .applied-heading h2{color:#a02d40}
+.studio.inference-dashboard .scene-panel[data-blocked=emergency]+.applied-card .reason{background:#fff0f1;color:#8d3040;font-weight:600}
+
+.studio.inference-dashboard .lab-channel[data-disabled=true]{color:#52677e;background:#edf0f4;border-style:dashed;text-decoration:line-through}

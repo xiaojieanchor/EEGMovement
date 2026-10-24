@@ -1,0 +1,8 @@
+# Reproduce the tested Windows x64 Python 3.13 build; target PC needs no Python.
+numpy==2.5.3
+cffi==2.0.0
+pywin32==311
+pyinstaller==6.17.0
+PySide6==6.10.2
+websockets==16.0
+cryptography==46.0.5

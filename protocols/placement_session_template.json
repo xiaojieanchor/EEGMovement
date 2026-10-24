@@ -1,0 +1,20 @@
+{
+  "template_only": true,
+  "placement_id": null,
+  "subject_id": null,
+  "day_id": null,
+  "session_id": null,
+  "position_condition": "unknown",
+  "position_condition_allowed": ["usual", "natural_left_shift", "natural_right_shift", "unknown"],
+  "measured_offset_mm": null,
+  "measured_rotation_degrees": null,
+  "measurement_method": null,
+  "photo_evidence_files": [],
+  "nominal_channel_order": ["CP5", "CP6", "PO3", "PO4", "O1", "Oz", "O2"],
+  "physical_numbering": [1, 2, 3, 4, 5, 6, 7],
+  "reference_contact_reviewed": false,
+  "ground_contact_reviewed": false,
+  "worn_quality_reviewed": false,
+  "quest_strap_interference": null,
+  "notes": "One new ID per re-donning. Never fabricate measured offsets or assign one direction to one placement."
+}

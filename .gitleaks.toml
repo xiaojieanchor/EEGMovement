@@ -1,0 +1,9 @@
+[extend]
+useDefault = true
+
+[[allowlists]]
+description = "SSH host public-key fingerprint is public verification material, not an API key"
+condition = "AND"
+paths = ['''^hub/config\.json$''']
+regexTarget = "line"
+regexes = ['''"ssh_hostkey_sha256"\s*:\s*"[a-f0-9]{64}"''']

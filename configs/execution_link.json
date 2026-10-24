@@ -1,0 +1,53 @@
+{
+  "status": "local_shared_core_tested_unity_engine_pending",
+  "protocol": 1,
+  "transport": "HMAC-SHA256 authenticated UDP on loopback only",
+  "hub_udp": "127.0.0.1:19771",
+  "default_receiver_udp": "127.0.0.1:19770",
+  "heartbeat_interval_ms": 50,
+  "ttl_ms": 180,
+  "minimum_remaining_ttl_ms": 25,
+  "freshness_clock": "receiver-issued ticket mapped to receiver monotonic clock; never refresh TTL on arrival",
+  "pairing_lifetime": "random key and hub session per process; private runtime file; no account credentials",
+  "receiver_inbox_capacity": 8,
+  "receiver_authenticated_packet_limit_per_second": 160,
+  "hub_packet_limit_per_second": {
+    "unknown_endpoints_total": 200,
+    "each_paired_endpoint": 80
+  },
+  "max_wire_packet_bytes": 4096,
+  "max_receivers": 4,
+  "max_pending_ack_per_receiver": 128,
+  "entry_confirmation": {
+    "updates": 2,
+    "min_receiver_ticket_spacing_ms": 30,
+    "p_active": 0.8,
+    "direction_confidence": 0.7,
+    "distinct_decision_ids_required": true
+  },
+  "speed_limits": {
+    "max_m_s": 1.2,
+    "test_default_m_s": 0.6,
+    "acceleration_m_s2": 0.9,
+    "idle_deceleration_m_s2": 4.0,
+    "max_yaw_deg_s": 60,
+    "test_yaw_deg_s": 40
+  },
+  "hard_stop": [
+    "invalid source",
+    "uncalibrated model",
+    "stale command",
+    "frame stall",
+    "local emergency",
+    "arena boundary"
+  ],
+  "live_model_enabled": false,
+  "test_mode": "explicit synthetic fixture, receiver opt-in, <=10s lease; never interpreted as EEG decoding",
+  "unity_project": "unity/EEGMovement",
+  "unity_target": "Unity 6.3 LTS; built-in renderer; Windows first",
+  "unity_editor_compilation_verified": false,
+  "quest_build_verified": false,
+  "execution_server_fresh_ms": 150,
+  "execution_source_fresh_ms": 100,
+  "max_model_input_age_ms": 250
+}

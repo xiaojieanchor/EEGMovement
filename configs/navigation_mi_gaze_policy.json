@@ -1,0 +1,13 @@
+{
+  "schema": "eegmovement.navigation_mi_gaze_policy.v1",
+  "control_intent": "navigation_motor_imagery_with_gaze_auxiliary",
+  "primary_source": "motor_imagery",
+  "auxiliary_source": "gaze",
+  "imagined_task": "First person walking forward/backward and turning left/right",
+  "prescribed_limb_mapping": false,
+  "source_contribution_verified": false,
+  "evidence_requirement": "Separate imagery-only, gaze-only, combined and uncommanded-gaze/controller controls, grouped by complete session/date/wearing",
+  "public_data_boundary": "Native limb MI and ocular direction targets remain native; neither certifies imagined navigation decoding",
+  "release_and_unlabelled": "UNKNOWN, never implicit REST",
+  "deployment": "No automatic model activation, inference or movement"
+}

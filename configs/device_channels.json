@@ -1,0 +1,11 @@
+{
+  "device": "NeuraDock personal seven-channel layout",
+  "disabled_channels_1based": [1, 6],
+  "active_channels_1based": [2, 3, 4, 5, 7],
+  "reason": "User reported CH1 and CH6 physically broken on 2026-10-18; permanently exclude both from personal model input and quality eligibility until explicitly restored",
+  "updated_date": "2026-10-18",
+  "policy_id": "neuradock-five-active-ch2-3-4-5-7-v1",
+  "physical_slot_count": 7,
+  "minimum_usable_channels": 4,
+  "preserve_raw_and_historical_locked_experiments": true
+}

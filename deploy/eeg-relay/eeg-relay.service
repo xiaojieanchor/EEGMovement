@@ -1,0 +1,29 @@
+[Unit]
+Description=EEGMovement outbound relay and encrypted temporary cache
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=eeg-relay
+Group=eeg-relay
+WorkingDirectory=/opt/eeg-relay/current
+ExecStart=/opt/eeg-relay/venv/bin/python -m eeg_relay.server --config /etc/eeg-relay/config.json
+Restart=on-failure
+RestartSec=2
+MemoryMax=1G
+CPUQuota=100%
+TasksMax=128
+LimitNOFILE=4096
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/var/lib/eeg-relay
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+IPAddressDeny=any
+IPAddressAllow=localhost
+UMask=0077
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,57 @@
+MMD・VRoidモデル利用規約
+最新の利用規約はここで↓
+https://mizuirononeko.wixsite.com/mizuirononeko/mmd-vroid
+本モデルを使用した時点で、本規約に同意したものとみなします。
+■クレジット:
+公開時は【水色の描】を必ず表記
+■対象
+VRoidモデル・PMXモデル両方に適用
+■利用
+動画・静止画・配信・アバター利用OK
+収益目的での利用は禁止
+（有料販売・有料配信など）
+収益化チャンネルでの使用はOK
+（モデル自体の収益化はNG）
+法人利用は禁止
+■改変
+自由（色変更・追加・調整OK）
+■再配布
+改変有無問わず禁止
+■禁止事項
+過度な暴力表現／R-18／公序良俗違反
+
+SNSに投稿する時はメンション
+ニコニコ動画では親作品登録してくれると嬉しいです
+
+MMDモデルの方はVRMがMMDに簡単に変換できるアプリVRMtoMMDConverter使用
+
+ダウンロード場所
+vroid
+https://hub.vroid.com/users/98041368
+
+ニコニ立体
+https://3d.nicovideo.jp/users/134997762
+
+BowlRoll
+https://bowlroll.net/user/1004051
+
+BOOTH
+https://mizuirononeko.booth.pm
+
+X（旧Twitter）では最新情報の更新や制作の途中経過などを投稿していますので、是非フォローよろしくお願いします！
+
+■  SNS一覧
+・X（旧Twitter）：https://twitter.com/mizu_neko_1
+・YouTube：https://youtube.com/@mizu_neko_1
+・TikTok：https://tiktok.com/@mizu_neko_1
+・ニコニコ動画：https://www.nicovideo.jp/user/134997762 
+
+製作者：水色の描
+
+一部パーツ（髪飾り、背中の飾り、靴の兎）は、自分で作成したイラストをもとに、TripoAIを使用して3Dモデル化したものを使用しています。
+
+2026年2/22 配布開始
+
+2026年6/25 修正調整
+
+2026年7/20 軽量化

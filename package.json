@@ -1,0 +1,12 @@
+{
+  "name": "eegmovement-development",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Local DOM regression dependencies; product UI remains plain JavaScript",
+  "scripts": {
+    "test": "node tests/test_navigation_mi_capture.js && node tests/test_gaze_capture.js && node tests/test_gnautilus_ml_web.js && node tests/test_gnautilus_web.js && node tests/test_workspace_gnautilus.js && node tests/test_training_workbench_dom.js"
+  },
+  "devDependencies": {
+    "linkedom": "0.18.12"
+  }
+}

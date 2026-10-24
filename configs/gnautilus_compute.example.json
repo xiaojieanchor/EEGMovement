@@ -1,0 +1,13 @@
+{
+  "schema": "gnautilus.compute.v1",
+  "host": "PRIVATE_COMPUTE_HOST",
+  "port": 5522,
+  "username": "LOCAL_SSH_USERNAME",
+  "hostkey_sha256": "REPLACE_WITH_VERIFIED_HOST_KEY_SHA256",
+  "gpu_uuid": "REPLACE_WITH_AUTHORIZED_GPU_UUID",
+  "root": "/home/LOCAL_SSH_USERNAME/EEGMovement/gnautilus-v1",
+  "service_port": 18871,
+  "network_mode": "physical_interface",
+  "bind_address": null,
+  "interface_index": null
+}

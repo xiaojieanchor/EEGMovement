@@ -1,0 +1,19 @@
+{
+  "schema": "eegmovement-device-transition-v1",
+  "effective_date": "2026-10-22",
+  "timezone": "Asia/Shanghai",
+  "phase": "gnautilus_ml_ready_data_pending",
+  "legacy_archived": true,
+  "legacy_device": "NeuraDock",
+  "target_device": "g.tec g.Nautilus",
+  "new_device_integrated": false,
+  "new_model_selected": false,
+  "new_training_method_selected": true,
+  "legacy_acquisition_enabled": false,
+  "legacy_model_enabled": false,
+  "vr_transport_retained": true,
+  "archive": "G:/EEGMovement/Archives/2026-10-22-legacy-neuradock/README.md",
+  "archive_root": "G:/EEGMovement/Archives/2026-10-22-legacy-neuradock",
+  "new_device_software_ready": true,
+  "hardware_verified": false
+}

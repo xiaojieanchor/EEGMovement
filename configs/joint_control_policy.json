@@ -1,0 +1,18 @@
+{
+  "schema": "joint-imagery-gaze-control-v1",
+  "decision_date_local": "2026-10-17",
+  "source": "User explicitly defines sideward gaze as movement or turning intent",
+  "control_intent": "imagery_and_or_directional_gaze",
+  "preserve_ocular_direction_features": true,
+  "remove_ocular_ica_components": false,
+  "gaze_only_sideward_is_negative_example": false,
+  "leftward_gaze": "LEFT",
+  "rightward_gaze": "RIGHT",
+  "public_up_down_to_private_forward_backward": null,
+  "private_forward_backward": "Keep original instructed action labels; no invented gaze annotation",
+  "public_eye_labels": "Separate gaze-space auxiliary targets, not automatic VR action labels",
+  "rest": "Explicit stationary instruction; gaze direction is not objectively measured in historic private recordings",
+  "quality": "Preserve electrical quality masks; no fabrication of missing channels or unreliable data",
+  "evaluation": "Joint control accuracy, actual causal streaming delay and false activation during explicitly stationary periods",
+  "historical_test": "Already unsealed; subsequent reuse is development evaluation"
+}

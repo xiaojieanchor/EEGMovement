@@ -1,0 +1,83 @@
+"""Offscreen widget checks with explicitly synthetic fixtures; no SDK or network."""
+import os
+os.environ.setdefault('QT_QPA_PLATFORM','offscreen')
+import tempfile
+import time
+import unittest
+import json
+from unittest.mock import patch
+from pathlib import Path
+import numpy as np
+from PySide6 import QtWidgets
+from gnautilus_acquisition.qt_gui import Workbench
+from gnautilus_acquisition.display import PreviewBuffer,EventLog
+from tests.test_gnautilus_transport import descriptor
+from tests.test_gnautilus_gui import enrollment
+
+
+class FixtureController:
+    def __init__(self):
+        self.running=True;self.collector=self
+        self.descriptor=descriptor();self.descriptor['device_serial']='SOFTWARE-FIXTURE'
+        self.preview=PreviewBuffer();self.preview.configure(self.descriptor)
+        t=np.arange(2560)/512
+        a=np.stack([28*np.sin(2*np.pi*(8+i*.17)*t)+10*np.sin(2*np.pi*1.3*t) for i in range(32)],axis=1).astype(np.float32)
+        a[1100:1130,2]=np.nan;self.preview.push(a,time.monotonic_ns());self.log=EventLog()
+        for stage,message in [('采集','软件测试夹具：32路合成波形，未访问设备'),('写盘','软件夹具：本地保存计数检查'),('中枢','软件夹具：TLS回执状态展示'),('中枢·标签','软件夹具：LEFT / holding'),('中枢·VR','软件夹具：2个身份在线'),('异常','软件夹具：接触质量仍未验证')]:self.log.add(stage,'INFO',message)
+    def snapshot(self):
+        return dict(state='receiving',samples=25600,descriptor=self.descriptor,path='TEST-ONLY / raw.f32',network=dict(connected=True,backlog=2,durable_seq=998,hub=dict(recording_active=True,recording_samples=15360,label='LEFT',phase='holding',vr_online=2,model_state='not_configured',motion_state='STOP')))
+    def stop(self):self.running=False
+
+
+class QtTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):cls.app=QtWidgets.QApplication.instance() or QtWidgets.QApplication([])
+    def setUp(self):
+        self.tmp=tempfile.TemporaryDirectory();self.c=FixtureController();self.w=Workbench(self.c,Path(self.tmp.name)/'settings.json');self.w.resize(1420,900);self.w.show();self.app.processEvents();self.w.refresh_preview()
+    def tearDown(self):self.c.running=False;self.w.close();self.app.processEvents();self.tmp.cleanup()
+    def test_dynamic_page_fixed_gain_freeze_does_not_mutate_data(self):
+        self.assertEqual(self.w.channel_page.count(),4);self.w.channel_page.setCurrentIndex(3);self.assertEqual(self.w.wave.page,3)
+        self.assertEqual(self.w.wave.paths[0][0],'CH25');self.w.scale.setCurrentIndex(2);self.assertEqual(self.w.wave.gain,200)
+        self.w.freeze.setChecked(True);last=self.w.wave.last_read;self.c.preview.push(np.ones((20,32),np.float32),time.monotonic_ns());self.w.refresh_preview()
+        self.assertEqual(self.w.wave.last_read,last);self.assertEqual(self.c.preview.snapshot()['samples'][-1,0],1)
+        self.w.freeze.setChecked(False);self.w.refresh_preview();self.assertNotEqual(self.w.wave.last_read,last)
+    def test_hub_feedback_and_stage_filter_are_observed_values(self):
+        self.assertEqual(self.w.feedback_labels['vr'].text(),'2个在线');self.assertEqual(self.w.feedback_labels['label'].text(),'向左')
+        self.w.filter.setCurrentText('中枢');self.assertIn('LEFT / holding',self.w.log_view.toPlainText());self.assertNotIn('本地保存计数',self.w.log_view.toPlainText())
+    def test_stale_probe_expires_and_reduced_motion_keeps_data_refresh(self):
+        self.c.running=False;self.w.controller.collector=None;self.w.controller.snapshot=lambda:dict(state='idle',network={})
+        self.w.last_probe=dict(connected=True,hub=dict(vr_online=2));self.w.probed_at=time.monotonic()-10;self.w.refresh()
+        self.assertEqual(self.w.feedback_labels['transport'].text(),'等待连接')
+        self.w.reduce.setChecked(True);self.assertEqual(self.w.wave.timer.interval(),50);self.assertTrue(self.w.start_button.reduce_motion)
+
+    def test_update_check_does_not_expire_an_idle_live_status_link(self):
+        from types import SimpleNamespace
+        self.c.running=False;self.w.controller.collector=None;self.w.controller.snapshot=lambda:dict(state='idle',network={})
+        self.w.probed_at=time.monotonic()-60
+        self.w.status_link=SimpleNamespace(snapshot=lambda:dict(connected=True,transport='public_relay',hub_online=True,hub_state_fresh=True,hub=dict(vr_online=1,motion_state='STOP',model_state='not_configured',recording_active=False)))
+        self.w.updater.check();self.w.refresh();self.w.update_idle_refresh()
+        self.assertEqual(self.w.feedback_labels['vr'].text(),'1个在线')
+        self.assertIn('已确认',self.w.feedback_labels['transport'].text())
+        self.assertTrue(self.w.update_idle())
+        self.w.status_link=None
+
+    def test_missing_identity_starts_automatic_connection_without_file_prompt(self):
+        self.c.running=False;self.w.controller.collector=None
+        with patch.object(self.w,'start_enrollment') as enroll,patch('gnautilus_acquisition.client.probe_hub') as probe:
+            self.w.probe();self.app.processEvents();self.w.refresh();probe.assert_not_called();enroll.assert_called_once()
+        messages='\n'.join(row['message'] for row in self.w.events.snapshot())
+        self.assertNotIn('复制',messages);self.assertNotIn('开始测试 TCP',messages)
+        self.assertFalse(self.w.busy);self.assertIn('自动',self.w.pairing_status.text())
+
+    def test_internal_public_identity_shows_target_and_is_saved_after_probe(self):
+        from tests.test_relay_enrollment_client import IDENTITY
+        self.c.running=False;self.w.controller.collector=None;p=self.w.identity_path;p.write_text(json.dumps(IDENTITY),encoding='utf-8')
+        with patch('gnautilus_acquisition.client.probe_hub',return_value=dict(connected=True,elapsed_ms=1,hub={'vr_online':0})) as probe:
+            self.w.probe();end=time.monotonic()+2
+            while self.w.busy and time.monotonic()<end:self.app.processEvents();self.w.refresh();time.sleep(.01)
+            probe.assert_called_once()
+        self.assertIn('relay.example:443',self.w.pairing_status.text());self.assertEqual(self.w.settings.load()['pairing_path'],str(p))
+        self.assertIn('relay.example:443','\n'.join(row['message'] for row in self.w.events.snapshot()))
+
+
+if __name__=='__main__':unittest.main()
