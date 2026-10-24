@@ -19,7 +19,7 @@ def atomic_json(path,value):
 class StreamJournal:
     def __init__(self,path,descriptor):
         self.path=Path(path);self.path.mkdir(parents=True,exist_ok=True)
-        self.descriptor=validate_descriptor(descriptor);self.lock=threading.RLock();self.records={};self.intervals=[];self.closed=False
+        self.descriptor=validate_descriptor(descriptor);self.lock=threading.RLock();self.records={};self.sequences=[];self.intervals=[];self.closed=False
         p=self.path/'descriptor.json'
         if p.exists():
             if json_bytes(json.loads(p.read_text('utf-8')))!=json_bytes(self.descriptor):raise ValueError('Stored descriptor changed')
@@ -39,7 +39,7 @@ class StreamJournal:
             self.raw.seek(offset);raw=self.raw.read(length);validate_block(h,raw,self.descriptor)
             if h['seq'] in self.records:raise ValueError('Duplicate committed index')
             self._check_overlap(h)
-            self.records[h['seq']]=r;offset+=length;index_end+=len(line)
+            self.records[h['seq']]=r;bisect.insort(self.sequences,h['seq']);offset+=length;index_end+=len(line)
             bisect.insort(self.intervals,(h['sample_start'],h['sample_start']+h['sample_count']))
         self.raw.seek(0,2);raw_size=self.raw.tell();self.index.seek(0,2);index_size=self.index.tell()
         if offset>raw_size:raise ValueError('Committed samples are missing')
@@ -78,7 +78,7 @@ class StreamJournal:
             r=dict(offset=offset,length=len(raw),header=h)
             self.raw.write(raw);self.raw.flush();os.fsync(self.raw.fileno())
             self.index.write(json_bytes(r)+b'\n');self.index.flush();os.fsync(self.index.fileno())
-            self.records[seq]=r
+            self.records[seq]=r;bisect.insort(self.sequences,seq)
             bisect.insort(self.intervals,(h['sample_start'],h['sample_start']+h['sample_count']))
             while self._durable_seq+1 in self.records:self._durable_seq+=1
             return dict(received_seq=seq,durable_seq=self.durable_seq,duplicate=False)

@@ -37,14 +37,27 @@ class EventLog:
 
 
 def envelope_points(values,pixels):
-    """Min/max per pixel bucket in time order; nonfinite runs break the trace."""
+    """Peak-preserving display buckets; vectorized to leave I/O threads time."""
     a=np.asarray(values);valid=np.isfinite(a)
     edges=np.flatnonzero(np.diff(np.r_[False,valid,False]));segments=[]
     stride=max(1,int(math.ceil(len(a)/max(1,pixels))))
     for start,end in zip(edges[::2],edges[1::2]):
-        points=[]
-        for begin in range(int(start),int(end),stride):
-            part=a[begin:min(begin+stride,end)];lo=int(np.argmin(part));hi=int(np.argmax(part))
-            for offset in sorted({0,lo,hi,len(part)-1}):points.append((begin+offset,float(part[offset])))
-        if points:segments.append(points)
+        start,end=int(start),int(end)
+        if stride==1:
+            indices=np.arange(start,end)
+        else:
+            count=(end-start)//stride
+            indices=np.empty(0,dtype=np.int64)
+            if count:
+                blocks=a[start:start+count*stride].reshape(count,stride)
+                offsets=np.stack((np.zeros(count,dtype=np.int64),np.argmin(blocks,axis=1),np.argmax(blocks,axis=1),np.full(count,stride-1,dtype=np.int64)),axis=1)
+                offsets.sort(axis=1)
+                keep=np.column_stack((np.ones(count,dtype=bool),offsets[:,1:]!=offsets[:,:-1]))
+                indices=(start+np.arange(count)[:,None]*stride+offsets)[keep]
+            tail=start+count*stride
+            if tail<end:
+                part=a[tail:end]
+                extra=tail+np.array(sorted({0,int(np.argmin(part)),int(np.argmax(part)),len(part)-1}))
+                indices=np.r_[indices,extra]
+        if len(indices):segments.append(list(zip(indices.tolist(),a[indices].astype(float).tolist())))
     return segments

@@ -21,6 +21,13 @@ SDK_OPEN_TIMEOUT_SECONDS=15.
 SDK_SAMPLE_TIMEOUT_SECONDS=5.
 
 
+def source_age_ms(header,rate,now_ns=None):
+    """Host read age for existing freshness gates; not a hardware timestamp."""
+    now_ns=time.monotonic_ns() if now_ns is None else now_ns
+    host_age=max(0.,(now_ns-header['read_monotonic_ns'])/1e6)
+    return host_age
+
+
 def connect_authenticated(enrollment,timeout=3,on_stage=None):
     on_stage=on_stage or (lambda *args:None)
     required=['host','port','agent_id','secret','certificate_sha256']
@@ -117,7 +124,7 @@ class Replicator:
                         seq=None;mode='backfill'
                         if maximum>self.last_live_seq and not self.backfill_only:
                             h,body=self.journal.read(maximum)
-                            if 0<=time.monotonic_ns()-h['read_monotonic_ns']<150_000_000:
+                            if source_age_ms(h,self.journal.descriptor['sampling_rate'])<150:
                                 seq=maximum;mode='live';self.last_live_seq=seq
                         if seq is None:
                             candidate=self.state['durable_seq']+1
@@ -127,7 +134,7 @@ class Replicator:
                         if time.monotonic()-heartbeat>=.08:
                             r=self._send_health(s);ticket=r['ticket'];heartbeat=last_health=time.monotonic()
                         self.stop_event.wait(.01);continue
-                    h=dict(h,mode=mode,ticket=ticket,source_age_ms=max(0,(time.monotonic_ns()-h['read_monotonic_ns'])/1e6))
+                    h=dict(h,mode=mode,ticket=ticket,source_age_ms=source_age_ms(h,self.journal.descriptor['sampling_rate']))
                     send_frame(s,h,body);r,_=recv_frame(s)
                     if r.get('kind')!='ack' or r.get('ack_seq')!=seq:raise ValueError('Mismatched block acknowledgement')
                     self.acked.add(seq)
@@ -269,7 +276,7 @@ class Collector:
                 if self.writer.is_alive():self.state.update(state='error',error='写盘线程未结束，文件保持未关闭以供恢复')
                 else:
                     # A brief flush opportunity; offline journals stay available for explicit recovery.
-                    end=time.monotonic()+.3
+                    end=time.monotonic()+5.
                     while self.network.snapshot()['backlog'] and time.monotonic()<end:time.sleep(.02)
                     self.network.stop()
                     try:

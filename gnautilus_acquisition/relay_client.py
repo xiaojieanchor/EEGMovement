@@ -1,12 +1,12 @@
 """Pipelined cloud upload from durable originals; Hub acknowledgements remain authoritative."""
-import json,secrets,threading,time
+import bisect,json,secrets,threading,time
 from eeg_relay.endpoint import Endpoint
 from eeg_relay.protocol import encoded,pack
 from .client import Replicator
 
 class RelayReplicator(Replicator):
     def __init__(self,*args,**kwargs):
-        super().__init__(*args,**kwargs);self.cloud={};self.inflight={};self.ticket=None;self.cloud_bytes=0
+        super().__init__(*args,**kwargs);self.cloud={};self.inflight={};self.ticket=None;self.cloud_bytes=0;self.live_scan_seq=0;self.backfill_scan_seq=0
         self.endpoint=Endpoint(self.enrollment,self.message,on_state=self.connection_state,lanes=('control','data','backfill'),on_stage=lambda lane,stage,message:self.on_event('公网·'+lane,'INFO',stage+' · '+message))
         self.state.update(transport='public_relay',cloud_blocks=0,hub_online=False,proxy_mode=self.enrollment.get('proxy_mode','auto'))
     def connection_state(self,state):
@@ -74,18 +74,25 @@ class RelayReplicator(Replicator):
             if any(t.is_alive() for t in senders):self.state.update(fatal_error='发送线程未结束，保留本地记录后停止',error='发送线程未结束');self.stop_event.set()
     def _next_pending(self,live):
         now=time.monotonic();stamp=time.monotonic_ns()
-        with self.journal.lock:
-            candidates=[(n,r['header']['read_monotonic_ns']) for n,r in self.journal.records.items()]
         with self.lock:
+            if live and (self.backfill_only or not self.ticket):return None
             self.inflight={n:t for n,t in self.inflight.items() if now-t<3}
-            # Reserve half of the bounded window for new live data.
             if len(self.inflight)>=(64 if live else 32):return None
-            for n,read in sorted(candidates):
+            cursor=max(self.state['durable_seq'],self.live_scan_seq if live else self.backfill_scan_seq)
+            with self.journal.lock:
+                numbers=self.journal.sequences;at=bisect.bisect_right(numbers,cursor)
+                if not live and at==len(numbers):
+                    at=bisect.bisect_right(numbers,self.state['durable_seq'])
+                # Work per poll stays bounded even after hours of recording.
+                candidates=[(n,self.journal.records[n]['header']['read_monotonic_ns']) for n in numbers[at:at+64]]
+            for n,read in candidates:
+                if live:self.live_scan_seq=n
+                else:self.backfill_scan_seq=n
                 age=max(0,(stamp-read)/1e6);fresh=age<150 and not self.backfill_only
                 if n<=self.state['durable_seq'] or n in self.acked or n in self.inflight or now-self.cloud.get(n,-1e9)<=60:continue
                 if live:
                     if not fresh or not self.ticket or n<=self.last_live_seq:continue
-                elif fresh:continue # Never steal a fresh block from the live lane.
+                elif fresh:continue
                 self.inflight[n]=now
                 if live:self.last_live_seq=n
                 return n

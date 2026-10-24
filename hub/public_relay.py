@@ -25,7 +25,7 @@ class HubRelay:
             if not self.endpoint.snapshot()['connected']:continue
             try:
                 report=hub_call(self.config,'list');self.state['role_states']=report['role_states'];requests=report['requests']
-                feedback=self.hub.gnautilus_runtime.feedback();safe=not feedback.get('recording_active',True) and feedback.get('motion_state')=='STOP'
+                feedback=self.feedback();safe=not feedback.get('recording_active',True) and feedback.get('motion_state')=='STOP'
                 self.state['onboarding']=dict(state='ready' if safe else 'waiting_idle',message='按软件类型自动连接' if safe else '记录关闭、动作停止后自动连接',pending_count=len(requests),last_poll_ms=time.time()*1000)
                 if not safe:continue
                 for request in requests:
@@ -91,6 +91,7 @@ class HubRelay:
             age=b.get('source_age_ms')
             if h.get('delivery')=='live' and lane=='data' and issued is not None and type(age) in (int,float) and math.isfinite(age) and age>=0:source_mark=issued-age/1000
             if (d['stream_id'],d['epoch'],b['seq'])!=(h['stream'],h['epoch'],h['block_seq']):raise ValueError('Envelope/sample identity mismatch')
+            source_mark=self.source_mark(identity,b,source_mark)
             result=self.hub.gnautilus_runtime.service.ingest_external(identity,d,b,raw,source_mark)
             self.state['blocks']+=not result['duplicate'];self.state['backfill_blocks']+=not result['live_accepted']
             if result['live_accepted']:
@@ -141,13 +142,36 @@ class HubRelay:
                 if old and now-old['t2']<10000 and data.get('t1')==old['t1'] and data.get('t2')==old['t2']:
                     t0,t1,t2,t3=(data[k] for k in ('t0','t1','t2','t3'));rtt=(t3-t0)-(t2-t1)
                     if all(type(v) in (int,float) and math.isfinite(v) for v in (t0,t1,t2,t3)) and 0<=rtt<=2000:
-                        self.clock_maps[identity]=dict(offset_ms=((t1-t0)+(t2-t3))/2,uncertainty_ms=rtt/2,measured=now)
+                        candidate=dict(offset_ms=((t1-t0)+(t2-t3))/2,uncertainty_ms=rtt/2,measured=now)
+                        previous=self.clock_maps.get(identity)
+                        if not previous or now-previous['measured']>=15000 or candidate['uncertainty_ms']<previous['uncertainty_ms']+max(1.,(now-previous['measured'])*.0001):self.clock_maps[identity]=candidate
             else:
                 nonce=secrets.token_hex(16);reply=dict(nonce=nonce,t0=data['t0'],t1=now,t2=time.monotonic()*1000)
                 self.clock_pending[(identity,nonce)]=reply;self.clock_pending={k:v for k,v in self.clock_pending.items() if now-v['t2']<10000}
                 self.send(identity,'clock_reply',reply)
         elif kind=='update_state':self.state.setdefault('device_updates',{})[identity]=json.loads(body)
         else:raise ValueError('Unsupported device role/message')
+    def feedback(self):
+        return dict(self.hub.gnautilus_runtime.feedback(),relay_timing_policy='authenticated_host_interval_v1')
+
+    def source_mark(self,identity,block,ticket_mark):
+        """Tighten a valid ticket bound using the authenticated clock interval.
+
+        Both values bound the host read from below. The larger bound avoids
+        charging an old status ticket's entire round trip to a newly read block.
+        The existing 250ms freshness check still runs after the durable commit.
+        """
+        if ticket_mark is None:return None
+        mapping=self.clock_maps.get(identity);read=block.get('read_monotonic_ns')
+        if not mapping or type(read) is not int:return ticket_mark
+        now=time.monotonic();age=now*1000-mapping['measured']
+        if not 0<=age<15000:return ticket_mark
+        # Ten milliseconds minimum plus a conservative 100ppm drift allowance.
+        margin=max(10.,age*.0001)
+        lower=(read/1e6+mapping['offset_ms']-mapping['uncertainty_ms']-margin)/1000
+        if not math.isfinite(lower) or lower>now:return ticket_mark
+        return max(ticket_mark,lower)
+
     def rpc(self,identity,h,body):
         data=json.loads(body);request_id=data.get('request_id','');key=identity,request_id
         if not isinstance(request_id,str) or len(request_id)!=32:raise ValueError('Invalid device request identity')

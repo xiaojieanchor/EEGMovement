@@ -454,10 +454,18 @@ class WorkerReader:
         return np.zeros((1, 2), dtype=np.float32)
 
     def close(self):
-        pass
+        if self.settings.get('close_delay'):time.sleep(self.settings['close_delay'])
 
 
 class WorkerTests(unittest.TestCase):
+    def test_normal_slow_vendor_release_gets_grace_without_forced_kill(self):
+        worker=SDKWorker({'close_delay':2.5},reader_factory=WorkerReader).start()
+        self.assertEqual(worker.receive(5)['kind'],'descriptor')
+        began=time.monotonic();worker.stop()
+        self.assertFalse(worker.forced_termination)
+        self.assertFalse(worker.alive)
+        self.assertLess(time.monotonic()-began,8)
+
     def test_read_observation_includes_native_call_and_copy_duration(self):
         worker=SDKWorker({'delay':.05},reader_factory=WorkerReader).start()
         try:

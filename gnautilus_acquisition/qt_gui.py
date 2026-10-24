@@ -70,13 +70,15 @@ class Waveform(QtWidgets.QWidget):
     COLORS=['#1d8f7d','#318dc5','#7c79c9','#d29b50','#288b97','#679d59','#a877a2','#5e8dc4']
     def __init__(self,parent=None):
         super().__init__(parent);self.setMinimumHeight(265);self.setSizePolicy(QtWidgets.QSizePolicy.Expanding,QtWidgets.QSizePolicy.Expanding)
-        self.preview=None;self.page=0;self.gain=100.;self.paths=[];self.frozen=False;self.reduced=False;self.last_read=None
-        self.timer=QtCore.QTimer(self);self.timer.setInterval(16);self.timer.timeout.connect(self._frame);self.timer.start()
+        self.preview=None;self.page=0;self.gain=100.;self.paths=[];self.frozen=False;self.reduced=False;self.last_read=None;self.trace_stale=True
+        self.timer=QtCore.QTimer(self);self.timer.setInterval(100);self.timer.timeout.connect(self._frame);self.timer.start()
     def _frame(self):
-        if self.isVisible() and self.preview is not None and not self.frozen:self.update()
+        stale=not self.last_read or not 0<=time.monotonic_ns()-self.last_read<500_000_000
+        if self.isVisible() and self.preview is not None and not self.frozen and stale!=self.trace_stale:
+            self.trace_stale=stale;self.update()
     def set_preview(self,preview):
         if self.frozen:return
-        self.preview=preview;self.last_read=preview.get('read_monotonic_ns');self._prepare();self.update()
+        self.preview=preview;self.last_read=preview.get('read_monotonic_ns');self.trace_stale=False;self._prepare();self.update()
     def resizeEvent(self,event):self._prepare();super().resizeEvent(event)
     def _prepare(self):
         self.paths=[]
@@ -90,7 +92,7 @@ class Waveform(QtWidgets.QWidget):
             for segment in segments:
                 path=QtGui.QPainterPath()
                 for j,(index,value) in enumerate(segment):
-                    x=84+(duration-(len(data)-1-index)/fs)/duration*width;y=center-value/self.gain*row*.36
+                    x=84+(duration-(len(data)-1-index)/fs)/duration*width;y=center-max(-2.,min(2.,value/self.gain))*row*.36
                     if j==0:path.moveTo(x,y)
                     else:path.lineTo(x,y)
                 paths.append(path)
@@ -113,7 +115,11 @@ class Waveform(QtWidgets.QWidget):
             p.setFont(QtGui.QFont('Consolas',8));p.setPen(QtGui.QColor('#8c9e98'));p.drawText(QtCore.QRectF(10,center+2,70,16),QtCore.Qt.AlignVCenter,f'±{self.gain:g} µV')
             if clipped:
                 p.setPen(QtGui.QColor('#b17b36'));p.drawText(QtCore.QRectF(84+width+3,center-8,28,16),QtCore.Qt.AlignVCenter,'限幅')
-            p.save();p.setClipRect(QtCore.QRectF(84,center-row*.36,width,row*.72));p.translate(-shift,0);p.setPen(QtGui.QPen(QtGui.QColor(color if elapsed<.5 else '#a8b9b3'),1.25))
+            p.save();p.setClipRect(QtCore.QRectF(84,center-row*.36,width,row*.72));p.translate(-shift,0)
+            # Dense EEG traces use a one-pixel cosmetic stroke. Software
+            # antialiasing otherwise holds the GUI/GIL across native raster work.
+            p.setRenderHint(QtGui.QPainter.Antialiasing,False)
+            pen=QtGui.QPen(QtGui.QColor(color if elapsed<.5 else '#a8b9b3'),1);pen.setCosmetic(True);p.setPen(pen)
             for path in paths:p.drawPath(path)
             p.restore()
 
@@ -228,7 +234,7 @@ class Workbench(QtWidgets.QMainWindow):
         self.side_area=side_area;self.sidebar=sidebar
         layout.addWidget(side_area);layout.addWidget(area,1);self.setStyleSheet(STYLE)
         self.timer=QtCore.QTimer(self);self.timer.setInterval(200);self.timer.timeout.connect(self.refresh);self.timer.start()
-        self.preview_timer=QtCore.QTimer(self);self.preview_timer.setInterval(50);self.preview_timer.timeout.connect(self.refresh_preview);self.preview_timer.start()
+        self.preview_timer=QtCore.QTimer(self);self.preview_timer.setInterval(100);self.preview_timer.timeout.connect(self.refresh_preview);self.preview_timer.start()
         self.pairing_timer=QtCore.QTimer(self);self.pairing_timer.setSingleShot(True);self.pairing_timer.setInterval(250);self.pairing_timer.timeout.connect(self.update_pairing_status)
         self.events.add('校验','INFO',f'采集端 v{__version__} 已就绪。设备类型固定为EEG采集端，中枢自动归属；本机EEG发现单独查询GDS。');self.update_pairing_status();self.refresh()
         self.update_apply=None
@@ -432,13 +438,24 @@ class Workbench(QtWidgets.QMainWindow):
         self.wave.page=self.channel_page.currentData() or 0;self.wave.gain=self.scale.currentData() or 100;self.wave._prepare();self.wave.update()
     def _freeze(self,value):self.wave.frozen=value;self.events.add('校验','INFO','波形显示已冻结，后台继续记录' if value else '波形显示已恢复')
     def _reduced(self,value):
-        self.wave.reduced=value;self.wave.timer.setInterval(50 if value else 16)
+        self.wave.reduced=value;self.wave.timer.setInterval(100)
         for button in self.findChildren(MotionButton):button.reduce_motion=value
     def refresh_preview(self):
         collector=self.controller.collector
         if not collector or not hasattr(collector,'preview') or self.wave.frozen:return
         preview=collector.preview.snapshot()
         if preview['read_monotonic_ns']!=self.last_preview:self.last_preview=preview['read_monotonic_ns'];self.wave.set_preview(preview)
+    def idle_network(self,state):
+        saved=dict(state.get('network') or {})
+        if not self.status_link:return saved
+        current=self.status_link.snapshot()
+        if not state.get('descriptor'):return current
+        # A status-only reconnect must not hide a previous stream's unacked data.
+        for key in ('connected','hub_online','hub_state_fresh','hub_age_ms','transport','path','hub','error'):
+            if key in current:saved[key]=current[key]
+        saved['status_only']=False
+        return saved
+
     def refresh(self):
         self._refresh_enrollment()
         if getattr(self,'update_apply',None) and self.update_idle():
@@ -455,7 +472,7 @@ class Workbench(QtWidgets.QMainWindow):
             elif done:done(result)
         s=self.controller.snapshot();network=s.get('network') or {};d=s.get('descriptor') or {}
         if not self.controller.running and not self.recovery:
-            if self.status_link:network=self.status_link.snapshot()
+            if self.status_link:network=self.idle_network(s)
             if not self.busy and not self.closing and self.update_enrollment and os.environ.get('QT_QPA_PLATFORM')!='offscreen' and (self.status_link is None or self.status_link.stop_event.is_set()):
                 from .status_link import StatusLink
                 self.status_link=StatusLink(self.update_enrollment,self.events.add).start()
@@ -530,9 +547,9 @@ class Workbench(QtWidgets.QMainWindow):
     def runtime_snapshot(self):
         from .telemetry import build
         state=self.controller.snapshot();network=state.get('network') or {}
-        if not self.controller.running and self.status_link:network=self.status_link.snapshot()
+        if not self.controller.running and self.status_link:network=self.idle_network(state)
         allowed=('connected','transport','hub_online','hub_state_fresh','hub_age_ms','durable_seq','cloud_blocks','backlog','live_accepted','live_submitted','error')
-        hub_fields=('source_fresh','sample_index_end','source_epoch','recording_active','recording_samples','events_saved','label','phase','vr_online','model_state','motion_state')
+        hub_fields=('relay_timing_policy','source_age_ms','last_source_loss','source_fresh','sample_index_end','source_epoch','recording_active','recording_samples','events_saved','label','phase','vr_online','model_state','motion_state')
         hub=network.get('hub') or {}
         return dict(schema='gnautilus.runtime.v1',pid=os.getpid(),updated_utc_ns=time.time_ns(),
                     client=build(self.profile(),state,network),
@@ -567,5 +584,11 @@ def run(*,start_receiving=False,status_path=None):
                 window.events.add('校验','WARN','运行诊断文件无法写入：'+str(error))
                 window.runtime_timer.stop()
         window.runtime_timer=QtCore.QTimer(window);window.runtime_timer.timeout.connect(write_runtime);window.runtime_timer.start(1000)
-    if start_receiving:QtCore.QTimer.singleShot(2000,window.begin)
+    if start_receiving:
+        def start_when_ready():
+            if window.closing:return
+            if window.busy:
+                QtCore.QTimer.singleShot(250,start_when_ready)
+            else:window.begin()
+        QtCore.QTimer.singleShot(2000,start_when_ready)
     return app.exec()

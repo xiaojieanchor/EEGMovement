@@ -40,7 +40,7 @@ class GnautilusRuntime:
         self.hub,self.root=hub,root;self.descriptor=None;self.last_seq=None;self.last_counter=None;self.received_blocks=0;self.last_close=None
         self.service=IngestService(root,self.accept,on_descriptor=self.describe,on_state=self.connection_state,get_hub_state=self.feedback,port=port)
         self.feedback_boot_id=secrets.token_hex(8);self.feedback_logs=collections.deque(maxlen=20);self.feedback_log_seq=0
-        self.paused=False;self.error=None;self.stop_event=threading.Event()
+        self.paused=False;self.error=None;self.last_source_loss=None;self.stop_event=threading.Event()
     def start(self):
         self.service.start();self.thread=threading.Thread(target=self._tick,daemon=True,name='g.Nautilus lifecycle');self.thread.start()
     def execution(self):
@@ -64,7 +64,8 @@ class GnautilusRuntime:
                 events_saved=acq.get('events_saved',0),source_epoch=self.hub.epoch,sample_index_end=self.hub.sample_index,
                 vr_online=sum(bool(p.get('online')) for p in peers),model_state=self.hub.intent.snapshot().get('inference_state','stopped') if hasattr(self.hub,'ml') else 'not_configured',motion_state=self.execution()['state'],
                 contact_quality_known=False,source_fresh=self.fresh(),hub_utc_ns=time.time_ns(),
-                log_boot_id=self.feedback_boot_id,logs=list(self.feedback_logs))
+                log_boot_id=self.feedback_boot_id,logs=list(self.feedback_logs),
+                source_age_ms=round((time.monotonic()-self.hub.last_packet)*1000,2) if self.hub.last_packet is not None else None,last_source_loss=self.last_source_loss)
     def _tick(self):
         while not self.stop_event.wait(.1):
             try:
@@ -128,6 +129,11 @@ class GnautilusRuntime:
     def source_lost(self,reason):
         h=self.hub
         with h.lock:
+            active=bool(h.recorder or hasattr(h,'acquisition') and h.acquisition.snapshot().get('active'))
+            if active:
+                age=round((time.monotonic()-h.last_packet)*1000,2) if h.last_packet is not None else None
+                self.last_source_loss=dict(reason=reason,source_age_ms=age,sample_index_end=h.sample_index,time_ns=time.time_ns())
+                self.log_feedback('连接',f'采集已中断 · {reason} · 数据年龄 {age}ms','WARN')
             if hasattr(h,'ml') and (h.intent.inference_enabled or h.intent.latest):h.intent.invalidate(reason)
             if hasattr(h,'acquisition') and h.acquisition.snapshot().get('active'):h.acquisition.stop(reason=reason)
             elif h.recorder:self.stop_recording()

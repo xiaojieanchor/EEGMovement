@@ -46,6 +46,11 @@ def _run_worker(connection, stop_event, settings, reader_factory):
         reader = reader_factory(**settings)
         descriptor = reader.open()
         connection.send({'kind': 'descriptor', 'descriptor': descriptor})
+        # Poll only our participant at 80 ms when rate is known. The vendor
+        # retains every sample; a 200 ms destination capacity drains jitter
+        # without producing 31 tiny network/journal frames per second.
+        rate=descriptor.get('sampling_rate')
+        interval=.08 if isinstance(rate,(int,float)) and rate>0 else .002
         while not stop_event.is_set():
             began=time.monotonic_ns();wall_began=time.time_ns()
             samples = reader.read()
@@ -57,6 +62,7 @@ def _run_worker(connection, stop_event, settings, reader_factory):
                                  'read_completed_monotonic_ns':read_time,'read_completed_utc_ns':wall_time})
             else:
                 stop_event.wait(.002)
+            if len(samples):stop_event.wait(max(0.,interval-(time.monotonic_ns()-began)/1e9))
     except BaseException as exc:
         try:
             connection.send({'kind': 'error', 'code': getattr(exc, 'code', type(exc).__name__),
@@ -127,7 +133,7 @@ class SDKWorker:
         return bool(self.alive and self.last_message_monotonic is not None and
                     time.monotonic() - self.last_message_monotonic > timeout)
 
-    def stop(self, timeout=2, on_message=None):
+    def stop(self, timeout=10, on_message=None):
         """Stop this participant, returning pending blocks for the durable writer.
 
         A caller may instead supply ``on_message`` to commit every drained block

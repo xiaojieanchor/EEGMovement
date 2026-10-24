@@ -65,3 +65,5 @@ g.Nautilus已提供独立Windows采集工作台、只读共享参与者、TLS传
 中枢默认使用新设备独立入口，暂停旧设备采集，不启动旧模型推理或训练后台。旧七槽、250Hz、CH1/CH6故障规则和旧模型成绩不适用于新设备。停止、急停、Quest连接与执行回执继续保留；新模型后续单独确定和验收。
 
 原README及旧阶段说明已完整保存到[历史入口文档](G:/EEGMovement/Archives/2026-10-22-legacy-neuradock/historical-entrypoints/README.before-transition.md)与ZIP快照。原数据、协议和历史失败记录均保留原字节；移动映射记录原路径。服务器独有资料尚未远程归档，本次未连接、停止或修改远端任务。
+
+采集端最新合并与实测：[1.1.11 连续传输验证](docs/gnautilus/采集端合并与连续传输验证_1.1.11_20261024.md)。

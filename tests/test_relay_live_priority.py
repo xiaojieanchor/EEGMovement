@@ -65,3 +65,35 @@ def test_quick_cloud_ack_does_not_reintroduce_an_inflight_slot(tmp_path):
     rep.endpoint=SimpleNamespace(send=send,snapshot=lambda:{'connected':True})
     rep._send_next_live();assert not rep.inflight
     journal.close()
+
+
+def test_large_acknowledged_history_does_not_get_scanned_on_each_live_poll(tmp_path):
+    rep,journal=make_rep(tmp_path)
+    class HeadersOnly(dict):
+        reads=0
+        def items(self):raise AssertionError('A live poll must not copy the whole history')
+        def __getitem__(self,key):self.reads+=1;return super().__getitem__(key)
+    header=dict(read_monotonic_ns=time.monotonic_ns())
+    records=HeadersOnly({n:dict(header=header) for n in range(1,100001)})
+    rep.journal=SimpleNamespace(lock=threading.RLock(),records=records,sequences=list(range(1,100001)));rep.state['durable_seq']=99998
+    header['read_monotonic_ns']=time.monotonic_ns()
+    assert rep._next_pending(True)==99999
+    assert records.reads<=64
+    journal.close()
+
+
+def test_no_ticket_does_not_consume_a_still_fresh_live_candidate(tmp_path):
+    rep,journal=make_rep(tmp_path);rep.ticket=None
+    assert rep._next_pending(True) is None
+    rep.ticket='new-ticket';assert rep._next_pending(True)==1
+    journal.close()
+
+
+def test_history_cursor_wraps_and_retries_unacknowledged_holes(tmp_path):
+    rep,journal=make_rep(tmp_path);rep.backfill_only=True
+    assert rep._next_pending(False)==1
+    assert rep._next_pending(False)==2
+    assert rep._next_pending(False)==3
+    rep.inflight.clear()
+    assert rep._next_pending(False)==1
+    journal.close()

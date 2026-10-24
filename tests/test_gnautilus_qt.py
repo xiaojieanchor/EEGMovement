@@ -48,7 +48,7 @@ class QtTests(unittest.TestCase):
         self.c.running=False;self.w.controller.collector=None;self.w.controller.snapshot=lambda:dict(state='idle',network={})
         self.w.last_probe=dict(connected=True,hub=dict(vr_online=2));self.w.probed_at=time.monotonic()-10;self.w.refresh()
         self.assertEqual(self.w.feedback_labels['transport'].text(),'等待连接')
-        self.w.reduce.setChecked(True);self.assertEqual(self.w.wave.timer.interval(),50);self.assertTrue(self.w.start_button.reduce_motion)
+        self.w.reduce.setChecked(True);self.assertEqual(self.w.wave.timer.interval(),100);self.assertTrue(self.w.start_button.reduce_motion)
 
     def test_update_check_does_not_expire_an_idle_live_status_link(self):
         from types import SimpleNamespace
@@ -59,6 +59,15 @@ class QtTests(unittest.TestCase):
         self.assertEqual(self.w.feedback_labels['vr'].text(),'1个在线')
         self.assertIn('已确认',self.w.feedback_labels['transport'].text())
         self.assertTrue(self.w.update_idle())
+        self.w.status_link=None
+
+    def test_idle_hub_status_cannot_erase_previous_stream_pending_blocks(self):
+        from types import SimpleNamespace
+        state=self.c.snapshot();self.c.running=False
+        self.w.status_link=SimpleNamespace(snapshot=lambda:dict(connected=True,status_only=True,backlog=0,durable_seq=0,hub=dict(label=None,recording_active=False)))
+        combined=self.w.idle_network(state)
+        self.assertEqual(combined['backlog'],2);self.assertEqual(combined['durable_seq'],998)
+        self.assertIsNone(combined['hub']['label']);self.assertFalse(combined['status_only'])
         self.w.status_link=None
 
     def test_missing_identity_starts_automatic_connection_without_file_prompt(self):
@@ -136,10 +145,13 @@ from gnautilus_acquisition.gui import run_gui
 from gnautilus_acquisition.qt_gui import Workbench
 app=QtWidgets.QApplication([])
 status=Path({str(status)!r});marker=Path({str(marker)!r})
-def make_window():return Workbench(settings_path=status.with_name('settings.json'))
+def make_window():
+    window=Workbench(settings_path=status.with_name('settings.json'));window.busy=True
+    QtCore.QTimer.singleShot(2400,lambda:setattr(window,'busy',False))
+    return window
 def begin(window):marker.write_text('explicit request')
 with patch('gnautilus_acquisition.qt_gui.Workbench',side_effect=make_window),patch.object(Workbench,'begin',begin):
-    QtCore.QTimer.singleShot(2600,app.quit)
+    QtCore.QTimer.singleShot(4000,app.quit)
     run_gui(start_receiving=True,status_path=status)
 assert marker.exists() and status.exists()
 '''
