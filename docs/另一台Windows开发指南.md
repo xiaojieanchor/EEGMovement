@@ -72,3 +72,7 @@ git push -u origin feature/acquisition-improvement
 ```
 
 提交前检查没有录制、SDK、证书私钥、SSH凭据、APK签名密钥或运行配对状态。后续可用`python scripts/audit_public_source.py --staged`检查暂存内容。
+
+## 32路实时检查与16／19路互换
+
+当前电极映射为设备16=Cz、19=C5，JSON零基键15／18；配置及实际验收步骤见[32路实时链路复核](gnautilus/32路实时链路复核与现场验收_20261024.md)。在中枢电脑可运行`python scripts/check_gnautilus_realtime.py`查看当前阻断条件；采集端电脑不应另起第二个中枢来代替此检查。
