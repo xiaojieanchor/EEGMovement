@@ -95,6 +95,9 @@ def build(root,live_name,public_root):
     for p in metadata:
         if p.name=='split.json':continue
         value=load(p)
+        if not isinstance(value,dict):
+            derived.append(dict(path=p.relative_to(root).as_posix(),metadata_sha256=sha(p),schema='json_collection',entries=len(value) if isinstance(value,list) else None,large_payload_revalidated=False,role_authority=False))
+            continue
         derived.append(dict(path=p.relative_to(root).as_posix(),metadata_sha256=sha(p),
             source_sha256=value.get('source_sha256'),recording_id=p.parent.name,
             schema=value.get('schema'),samples=value.get('samples'),

@@ -50,7 +50,7 @@ async function boot(file,scripts,status,other={}){
  const training=await boot('training',['refactor-status.js'],s);
  assert.equal(training.document.head.querySelector('script[src="/gnautilus-ml.js"]')?.getAttribute('src'),'/gnautilus-ml.js');
  assert.equal(training.document.getElementById('trainingRefresh').disabled,false);
- const lab=await boot('lab',['ui-state.js','lab.js'],s,{'/api/vr/status':{source:{fresh:false},quality:{good_channels:0},server:{},vr:{clients:[],stats:{}}}});
+ const lab=await boot('lab',['ui-state.js','telemetry-scene.js','lab.js'],s,{'/api/vr/status':{source:{fresh:false},quality:{good_channels:0},server:{},vr:{clients:[],stats:{}}}});
  assert.equal(lab.document.getElementById('labChannelGrid').children.length,8);
  assert.match(lab.document.getElementById('labSignalQuality').textContent,/18/);
  lab.document.getElementById('labWaveNext').click();

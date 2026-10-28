@@ -30,6 +30,13 @@ test('missing development cannot submit and reviewed window cannot be edited',as
  const d=data('a');d.records=d.records.slice(0,1);const b=await boot({datasets:[d]});
  assert.equal(b.$('gmTrain').disabled,true);assert.match(b.$('gwTrainReadiness').textContent,/缺开发/);assert.equal(b.$('gmWindow').readOnly,true);
 });
+test('personal streaming field describes prewarm rather than a fixed history limit',async()=>{
+ const d={id:'personal',schema:'gnautilus.personal_study.v1',title:'个人导航数据集',channels:Array(32).fill('fixture'),sampling_rate:250,episodes:['train','validation','test'].map(split=>({split}))};
+ const b=await boot({datasets:[d],jobs:[]});
+ assert.match(b.$('gmWindow').closest('label').querySelector('span').textContent,/预热/);
+ assert.match(b.$('gmDatasetInfo').textContent,/历史不以1.5秒截止/);
+ assert.equal(b.$('gmWindow').readOnly,true);
+});
 test('source to task and back keeps dataset identity, cancellation visible on request',async()=>{
  const b=await boot();b.$('gwDatasetJobs').click();assert.match(b.$('gwJobDataset').textContent,/数据 a/);assert.doesNotMatch(b.$('gmJobs').textContent,/j2/);
  b.$('gwClearJobs').click();assert.match(b.$('gmJobs').textContent,/已取消/);b.input('gwJobScope','motor');assert.match(b.$('gmJobs').textContent,/j2/);assert.doesNotMatch(b.$('gmJobs').textContent,/j1/);

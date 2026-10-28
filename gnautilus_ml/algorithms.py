@@ -8,6 +8,7 @@ ALGORITHMS={
  'bandpower_lda':'频带功率 / 收缩LDA','csp_lda':'正则化CSP / 收缩LDA',
  'gaze_lda':'前额低频方向 / LDA','cnn_gru':'因果轻量CNN / 单向GRU','hybrid':'眼动与运动想象 / 后融合'}
 ALGORITHMS['cnn_gru_baseline']='因果去基线 / 频带CNN＋GRU'
+ALGORITHMS['causal_jepa_stream']='联合导航 / 有状态JEPA'
 from .multistage import METHODS
 ALGORITHMS.update(METHODS)
 FRONTAL={'Fp1','Fp2','Fpz','AF3','AF4','AF7','AF8','F7','F8','F3','F4'}
@@ -26,6 +27,7 @@ def balanced(y,p):
 
 class Classifier:
     def __init__(self,algorithm,channels,fs,window_s=1.5,seed=17,max_epochs=50):
+        if algorithm=='causal_jepa_stream':raise ValueError('Use the whole-episode personal JEPA study entrypoint')
         if algorithm not in ALGORITHMS:raise ValueError('Unsupported classifier')
         if len(set(channels))!=len(channels) or not 1<=len(channels)<=64 or any(not isinstance(c,str) or not 1<=len(c)<=120 for c in channels):raise ValueError('Unique channel positions required')
         if not np.isfinite(fs) or not 1<=fs<=10000 or not np.isfinite(window_s) or not .25<=window_s<=5:raise ValueError('Invalid model sampling/history contract')

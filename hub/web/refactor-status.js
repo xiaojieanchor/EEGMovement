@@ -144,7 +144,7 @@
   const host=doc.getElementById('trainingWorkbench');if(!host)return;
   const refreshButton=doc.getElementById('trainingRefresh'),stamp=doc.getElementById('trainingSync');
   if(doc.body.dataset.deviceTransition==='gnautilus'){
-   const script=doc.createElement('script');script.src='/gnautilus-ml.js';script.onload=()=>window.GnautilusTraining.mount(host);script.onerror=()=>{host.textContent='训练工作台资源加载失败，请刷新页面'};doc.head.append(script);if(refreshButton){refreshButton.disabled=false;refreshButton.textContent='刷新任务';refreshButton.onclick=()=>location.reload()}if(stamp)stamp.textContent='新设备模型通路';const intro=doc.getElementById('trainingIntro');if(intro)intro.textContent='围绕眼动方向研究，集中管理数据、训练任务、结果与模型。';const history=doc.getElementById('legacyTrainingHistory');if(history){history.open=false;history.hidden=true;}return;
+   const script=doc.createElement('script');script.src='/gnautilus-ml.js';script.onload=()=>window.GnautilusTraining.mount(host);script.onerror=()=>{host.textContent='训练工作台资源加载失败，请刷新页面'};doc.head.append(script);if(refreshButton){refreshButton.disabled=false;refreshButton.textContent='刷新任务';refreshButton.onclick=()=>location.reload()}if(stamp)stamp.textContent='新设备模型通路';const intro=doc.getElementById('trainingIntro');if(intro)intro.textContent='围绕联合导航想象与眼动辅助，管理数据、训练任务、结果与模型。';const history=doc.getElementById('legacyTrainingHistory');if(history){history.open=false;history.hidden=true;}return;
   }
   let snapshot=null,signature='',busy=false;const preferences={};
   function render(){

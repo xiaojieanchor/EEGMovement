@@ -37,7 +37,7 @@ class ModelService:
         if route=='/capabilities':return dict(algorithms=[dict(id=k,title=v,trainable=True) for k,v in ALGORITHMS.items()],window_s=1.5,hop_s=.1,
             label_mapping=MAPPING,label_mapping_scope='legacy_four_limb_only',default_experiment_mode=DEFAULT_MODE,research_objective=RESEARCH_OBJECTIVE,
             task_specs_by_mode={mode:{label:task_spec(label,mode) for label in LABELS} for mode in MODES},
-            experiment_modes=MODES,readers=['gnautilus','halt','bci_iv_1','bci_iv_2a','eegmmidb','openbmi','eegeyenet'],jepa=dict(trainable=False,reason='研究扩展，未恢复旧模型'))
+            experiment_modes=MODES,readers=['gnautilus','halt','bci_iv_1','bci_iv_2a','eegmmidb','openbmi','eegeyenet'],jepa=dict(trainable=True,runtime_schema='gnautilus.causal_jepa_stream.v2',supported_runtimes=['gnautilus.causal_jepa_stream.v1','gnautilus.causal_jepa_stream.v2','gnautilus.hybrid_navigation.v1','gnautilus.hybrid_navigation.v2','gnautilus.hybrid_navigation.v3','gnautilus.hybrid_navigation.v4','gnautilus.hybrid_navigation.v5','gnautilus.hybrid_navigation.v6','gnautilus.hybrid_navigation.v7'],scope='same_wearing_internal_research'))
         if route=='/models':return dict(models=self.registry.models(),selected=self.registry.selected(),loaded=self.manifest['model_id'] if self.manifest else None)
         if route=='/jobs':return dict(jobs=self.registry.jobs())
         if route=='/datasets':
@@ -59,6 +59,11 @@ class ModelService:
             with self.lock,self.registry.lock:return dict(**self.get('/health'),**self.get('/models'),**self.get('/jobs'),**self.get('/datasets'),inference=self.inference_status())
         raise ValueError('Unsupported compute GET operation')
     def post(self,path,data):
+        if path=='/datasets/personal_study':
+            from .personal_study import compile_study
+            folder=within(self.root/'data'/identifier(data['upload_id']),self.root/'data')
+            key,study=compile_study(self.root,folder,self.code_root,folder/'source-receipt.json')
+            return dict(dataset_id=key,dataset=study)
         if path=='/datasets/import':
             records=[]
             for item in data.get('records',[]):
@@ -82,6 +87,17 @@ class ModelService:
         if path in ['/jobs','/jobs/prepare']:
             from .governance import check_protocol
             did=identifier(data['dataset_id']);dataset=read_json(self.root/'datasets'/(did+'.json'))
+            if data.get('algorithm')=='causal_jepa_stream':
+                from .personal_study import make_protocol
+                if data.get('architecture')=='shared_full32_joint_v2':
+                    from .joint_training import make_joint_protocol,prior_budget,freeze_public_resources
+                    protocol=make_joint_protocol(dataset,self.code_root,data,prior_budget(self.root),freeze_public_resources(self.root))
+                else:protocol=make_protocol(dataset,self.code_root,data,self.root)
+                check_protocol(protocol,dataset,self.code_root)
+                pid=digest(protocol);atomic(self.root/'protocols'/(pid+'.json'),protocol)
+                spec=dict(dataset_id=did,protocol_id=pid,algorithm='causal_jepa_stream')
+                if path=='/jobs/prepare':return dict(spec=spec,protocol=protocol,fit_started=False)
+                return self.registry.create_job(spec,data.get('request_key',digest(spec)))
             source={str(p.relative_to(self.code_root)).replace('\\','/'):file_hash(p) for p in sorted((self.code_root/'gnautilus_ml').glob('*.py'))}
             source.update({str(p.relative_to(self.code_root)).replace('\\','/'):file_hash(p) for p in (self.code_root/'gnautilus_acquisition').glob('*.py')})
             algorithm=data['algorithm']
@@ -132,7 +148,7 @@ class ModelService:
                 with self.lock:
                     if self.model is None:raise ValueError('Select and load a registered classifier first')
                     if not self.manifest.get('runtime_accepted'):raise ValueError('This classifier is for offline/native-task validation and has no live navigation contract')
-                    self.runner.inference_enabled=True;self.lease=time.monotonic();self.generation+=1;self.last_identity=None
+                    self.runner.inference_enabled=True;self.lease=time.monotonic();self.generation+=1;self.last_identity=None;self.reset_stream()
             finally:self.runner.resource.release()
             return self.inference_status()
         if path=='/inference/stop':self.stop();return self.inference_status()
@@ -142,6 +158,16 @@ class ModelService:
         from .runner import compile_inputs,metrics
         if self.model is None:raise ValueError('Select a registered model first')
         dataset=read_json(self.root/'datasets'/(identifier(data['dataset_id'])+'.json'))
+        if dataset.get('schema')=='gnautilus.personal_study.v1':
+            if self.manifest.get('runtime_schema') not in ['gnautilus.causal_jepa_stream.v1','gnautilus.causal_jepa_stream.v2','gnautilus.hybrid_navigation.v1','gnautilus.hybrid_navigation.v2','gnautilus.hybrid_navigation.v3','gnautilus.hybrid_navigation.v4','gnautilus.hybrid_navigation.v5','gnautilus.hybrid_navigation.v6','gnautilus.hybrid_navigation.v7'] or self.manifest.get('dataset_sha256')!=digest(dataset):raise ValueError('Select the matching personal streaming model')
+            role=data.get('role','development')
+            if role not in ['train','development']:raise ValueError('Held-out internal test is evaluated only by the locked study')
+            from .personal_study import load_episodes
+            from .jepa_training import evaluate
+            scores,frames=evaluate(self.model,load_episodes(dataset,'validation' if role=='development' else 'train'))
+            report=dict(schema='gnautilus.replay.v2',source='OFFLINE_REPLAY',motion_enabled=False,role=role,model_id=self.manifest['model_id'],metrics=scores,independent_test=False,frames=frames)
+            key=digest(dict(model=self.manifest['model_id'],dataset=data['dataset_id'],role=role));atomic(self.root/'logs'/('replay-'+key+'.json'),report)
+            return {k:v for k,v in report.items() if k!='frames'}
         values,_=compile_inputs(dataset,self.manifest['window_s'],self.manifest['hop_s']);role=data.get('role','development')
         if role not in ['train','development']:raise ValueError('Independent test data needs a separately locked acceptance protocol')
         x,y,groups,ids=values[role];prediction=self.model.predict(x);report=dict(schema='gnautilus.replay.v1',source='OFFLINE_REPLAY',motion_enabled=False,role=role,model_id=self.manifest['model_id'],metrics=metrics(y,prediction),windows=ids,
@@ -154,7 +180,9 @@ class ModelService:
         if 'continuous' in report:out['continuous']=[dict(record=r['record'],summary=r['summary']) for r in report['continuous']]
         return out
     def stop(self):
-        with self.lock:self.runner.inference_enabled=False;self.generation+=1;self.last=None;self.last_identity=None
+        with self.lock:self.runner.inference_enabled=False;self.generation+=1;self.last=None;self.last_identity=None;self.reset_stream()
+    def reset_stream(self):
+        self.stream_session=None;self.stream_identity=None;self.stream_end=None;self.stream_last=None;self.stream_hash=None
     def inference_status(self):
         with self.lock:
             if self.runner.inference_enabled and time.monotonic()-self.lease>3:self.stop()
@@ -163,8 +191,12 @@ class ModelService:
         started=time.monotonic()
         with self.lock:
             if not self.inference_status()['inference_enabled']:raise ValueError('Inference lease expired or inference is stopped')
-            self.lease=started;meta=self.manifest;d=data['descriptor'];contract=meta['input_contract']
+            meta=self.manifest;d=data['descriptor'];contract=meta['input_contract']
             if data['model_id']!=meta['model_id'] or data['generation']!=self.generation:raise ValueError('Inference generation/model changed')
+            if meta.get('runtime_schema') in ['gnautilus.causal_jepa_stream.v1','gnautilus.causal_jepa_stream.v2','gnautilus.hybrid_navigation.v1','gnautilus.hybrid_navigation.v2','gnautilus.hybrid_navigation.v3','gnautilus.hybrid_navigation.v4','gnautilus.hybrid_navigation.v5','gnautilus.hybrid_navigation.v6','gnautilus.hybrid_navigation.v7']:
+                from .stream_runtime import predict_stream
+                return predict_stream(self,data,started)
+            self.lease=started
             names=[c['name'] for c in d['channels'] if c['kind']=='EEG']
             if names!=contract['channels'] or d['sampling_rate']!=contract['sampling_rate'] or d.get('reference')!=contract['reference'] or d['configuration']!=contract['filter_configuration']:raise ValueError('Live montage/rate/reference/filter differs from model contract')
             if d.get('source_kind')!='gtec_live' or not d.get('layout_verified'):raise ValueError('Live g.Nautilus verified montage required')

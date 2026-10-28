@@ -206,7 +206,8 @@ class VrLink:
                 # headset over a concurrently open desktop preview.
                 candidates=[c for c in self.clients.values() if c['role']=='unity' and now-c['last_seen']<.3]
                 candidates.sort(key=lambda c:(c['address'][0]=='127.0.0.1',c['receiver_id']))
-                target=candidates[0]['receiver_id'] if candidates else None
+                bound=getattr(self,'model_receiver_id',None)
+                target=bound if bound is not None else candidates[0]['receiver_id'] if candidates else None
                 compatible=decision.get('motion_schema')!=2 or telemetry.get('motion_schema') in [2,3]
                 if decision.get('output_schema')==2:compatible=telemetry.get('motion_schema')==3
                 if rid==target and decision.get('enabled') and compatible:

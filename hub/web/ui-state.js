@@ -10,17 +10,17 @@
   const pages=Math.max(1,Math.ceil(channels.length/size)),current=Math.max(0,Math.min(pages-1,Number.isInteger(page)?page:0));
   return {newDevice,channels,count:channels.length,page:current,pages,visible:channels.slice(current*size,(current+1)*size),configuredRate:s.source?.configured_sfreq??s.source?.nominal_sfreq??descriptor?.sampling_rate??null};
  }
- function drawSignal(canvas,snapshot,page=0,mode='raw'){
+  function drawSignal(canvas,snapshot,page=0,mode='raw',options={}){
   if(!canvas)return;const view=signalView(snapshot,page),box=canvas.getBoundingClientRect(),w=box.width,h=box.height,dpr=typeof window!=='undefined'?window.devicePixelRatio||1:1;
-  if(!w||!h)return;canvas.width=Math.round(w*dpr);canvas.height=Math.round(h*dpr);const c=canvas.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);c.clearRect(0,0,w,h);c.fillStyle='#fff';c.fillRect(0,0,w,h);
-  const left=58,right=78,top=10,bottom=25,row=(h-top-bottom)/Math.max(1,view.visible.length),seconds=snapshot?.waveforms?.seconds||3,fs=snapshot?.waveforms?.display_sfreq,rows=snapshot?.source?.fresh?snapshot?.waveforms?.[mode]||[]:[];
+   if(!w||!h)return;if(canvas.width!==Math.round(w*dpr))canvas.width=Math.round(w*dpr);if(canvas.height!==Math.round(h*dpr))canvas.height=Math.round(h*dpr);const c=canvas.getContext('2d');c.setTransform(dpr,0,0,dpr,0,0);c.clearRect(0,0,w,h);c.fillStyle=options.dark?'#0c1623':'#fff';c.fillRect(0,0,w,h);
+  const left=58,right=78,top=10,bottom=25,row=(h-top-bottom)/Math.max(1,view.visible.length),seconds=snapshot?.waveforms?.seconds||3,fs=snapshot?.waveforms?.display_sfreq,rows=snapshot?.source?.fresh||options.retainHistory?snapshot?.waveforms?.[mode]||[]:[];
   c.font='11px Consolas,monospace';c.textAlign='left';
-  view.visible.forEach((channel,i)=>{const y=top+row*(i+.5);c.fillStyle='#52616e';c.fillText(channel.name,8,y+3);c.strokeStyle='#edf2f3';c.beginPath();c.moveTo(left,y);c.lineTo(w-right,y);c.stroke();
+  view.visible.forEach((channel,i)=>{const y=top+row*(i+.5);c.fillStyle=options.dark?'#9fb2c6':'#52616e';c.fillText(channel.name,8,y+3);c.strokeStyle=options.dark?'#213043':'#edf2f3';c.beginPath();c.moveTo(left,y);c.lineTo(w-right,y);c.stroke();
    const values=rows.map(r=>r[channel.index]);if(!values.length||!values.every(Number.isFinite))return;
    const sorted=[...values].sort((a,b)=>a-b),mid=sorted[Math.floor(sorted.length/2)];let peak=1e-6;for(const value of values)peak=Math.max(peak,Math.abs(value-mid));const scale=row*.36/peak;
-   c.strokeStyle='#298f88';c.beginPath();values.forEach((value,j)=>{const offset=Number.isFinite(fs)&&fs>0?(values.length-1-j)/(fs*seconds):(values.length-1-j)/Math.max(1,values.length-1),x=left+(w-left-right)*(1-offset),yy=y-(value-mid)*scale;j?c.lineTo(x,yy):c.moveTo(x,yy)});c.stroke();c.fillStyle='#52616e';c.fillText('±'+peak.toFixed(1)+' '+(channel.unit||'单位未知'),w-right+5,y+3);
+   c.strokeStyle=options.dark?'#5bd4c2':'#298f88';c.save();c.beginPath();c.rect(left,top,w-left-right,h-top-bottom);c.clip();c.beginPath();values.forEach((value,j)=>{const offset=Number.isFinite(fs)&&fs>0?(values.length-1-j)/(fs*seconds):(values.length-1-j)/Math.max(1,values.length-1),x=left+(w-left-right)*(1-offset-(options.scrollOffsetSeconds||0)/seconds),yy=y-(value-mid)*scale;j?c.lineTo(x,yy):c.moveTo(x,yy)});c.stroke();c.restore();c.fillStyle=options.dark?'#9fb2c6':'#52616e';c.fillText('±'+peak.toFixed(1)+' '+(channel.unit||'单位未知'),w-right+5,y+3);
   });
-  c.fillStyle='#627b73';c.textAlign='center';for(let i=0;i<=3;i++)c.fillText(i===3?'现在':(-seconds+seconds*i/3).toFixed(0)+' s',left+(w-left-right)*i/3,h-5);
+  c.fillStyle='#627b73';c.textAlign='center';for(let i=0;i<=3;i++)c.fillText(i===3?(snapshot?.source?.fresh?'现在':options.retainHistory?'上次样本':'现在'):(-seconds+seconds*i/3).toFixed(0)+' s',left+(w-left-right)*i/3,h-5);
   if(!rows.length)c.fillText(view.count?'等待新鲜数据流…':'等待实际通道信息…',w/2,h/2);c.textAlign='left';
  }
  function receiverState(clients,elapsed=0){
@@ -119,15 +119,15 @@
   const body=document.body,main=document.querySelector('main');if(!main||body.classList.contains('preview-page')||main.__studioMounted)return;main.__studioMounted=true;
   const path=location.pathname,arch=path==='/'&&new URLSearchParams(location.search).get('view')==='architecture';
   body.classList.add('studio');if(arch)body.classList.add('architecture-view');
-  const page=path==='/lab'?'lab':path==='/training'?'training':path==='/downloads'?'downloads':arch?'architecture':'overview';
+  const page=path==='/lab'?'lab':path==='/training'?'training':path==='/downloads'?'downloads':path==='/annotations'?'annotations':arch?'architecture':'overview';
   body.dataset.page=page;
-  const routes=[['overview','/','signal','实时中枢','SIGNAL MONITOR'],['lab','/lab','lab','实时推理','INFERENCE LAB'],['architecture','/?view=architecture','layers','系统架构','SYSTEM TOPOLOGY'],['training','/training','train','模型训练','MODEL TRAINING'],['downloads','/downloads','data','数据资源','DATA LIBRARY']];
+  const routes=[['overview','/','signal','实时中枢','SIGNAL MONITOR'],['lab','/lab','lab','实时推理','INFERENCE LAB'],['architecture','/?view=architecture','layers','系统架构','SYSTEM TOPOLOGY'],['training','/training','train','模型训练','MODEL TRAINING'],['downloads','/downloads','data','数据资源','DATA LIBRARY'],['annotations','/annotations','capture','眼动人工打标','OCULAR ANNOTATION']];
   const oldRail=document.querySelector('#studioRail,.rail');
   const rail=oldRail||document.createElement('aside');rail.className='studio-rail';rail.id='studioRail';
   const brand='<a class="studio-brand" href="/" aria-label="EEGMovement首页"><span class="studio-brand-mark">'+icon('signal')+'</span><span>EEG<span class="studio-brand-light">Movement</span><small>NEURAL INTERFACE LAB</small></span></a>';
   // Preserve the existing settings button and live hub indicator bindings.
   const settings=document.getElementById('settings'),hubDot=document.getElementById('hubDot'),address=document.getElementById('localAddress');
-  rail.innerHTML=brand+'<button type="button" class="studio-rail-close" aria-label="收起工作空间导航">×</button><div class="studio-rail-label">研究工作空间 <span>01 — 05</span></div><nav class="studio-primary" aria-label="研究工作空间">'+routes.map(([key,url,ico,label,en],i)=>'<a class="studio-link '+(page===key?'active':'')+'" href="'+url+'" '+(page===key?'aria-current="page"':'')+'>'+icon(ico)+'<span>'+label+'<small>'+en+'</small></span><em>0'+(i+1)+'</em></a>').join('')+'</nav><div class="studio-rail-label studio-rail-tools-label">实验工具</div><nav class="studio-tools" aria-label="实验工具"><a class="studio-link" href="/#desktopCapture">'+icon('capture')+'<span>自主采集</span></a><a class="studio-link" href="/vr-preview">'+icon('vr')+'<span>VR 实时画面</span></a><a class="studio-link" href="/#preparation">'+icon('check')+'<span>准备与系统状态</span></a></nav><div class="studio-rail-bottom"><div class="rail-runtime"></div><div class="rail-project"><b>EEG → INTENT → VR</b><span>本地采集 · 远端计算 · 闭环反馈</span></div></div>';
+  rail.innerHTML=brand+'<button type="button" class="studio-rail-close" aria-label="收起工作空间导航">×</button><div class="studio-rail-label">研究工作空间 <span>01 — 06</span></div><nav class="studio-primary" aria-label="研究工作空间">'+routes.map(([key,url,ico,label,en],i)=>'<a class="studio-link '+(page===key?'active':'')+'" href="'+url+'" '+(page===key?'aria-current="page"':'')+'>'+icon(ico)+'<span>'+label+'<small>'+en+'</small></span><em>0'+(i+1)+'</em></a>').join('')+'</nav><div class="studio-rail-label studio-rail-tools-label">实验工具</div><nav class="studio-tools" aria-label="实验工具"><a class="studio-link" href="/#desktopCapture">'+icon('capture')+'<span>自主采集</span></a><a class="studio-link" href="/vr-preview">'+icon('vr')+'<span>VR 实时画面</span></a><a class="studio-link" href="/#preparation">'+icon('check')+'<span>准备与系统状态</span></a></nav><div class="studio-rail-bottom"><div class="rail-runtime"></div><div class="rail-project"><b>EEG → INTENT → VR</b><span>本地采集 · 远端计算 · 闭环反馈</span></div></div>';
   if(settings){settings.className='studio-link';settings.innerHTML=icon('settings')+'<span>连接信息</span>';rail.querySelector('.studio-tools').append(settings);}
   const runtime=rail.querySelector('.rail-runtime');if(hubDot)runtime.append(hubDot);runtime.append(document.createTextNode('本地研究工作台'));if(address)runtime.append(address);
   if(!oldRail)body.prepend(rail);

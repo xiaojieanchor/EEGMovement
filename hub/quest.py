@@ -187,13 +187,13 @@ class QuestService:
             self.collection_owner=None
             return result
         raise LookupError('Unsupported device endpoint')
-    def frame(self):
+    def frame(self,device_id=None):
         with self.lock:
-            frame=max(self.frames.values(),key=lambda f:f['time'],default=None)
+            frame=self.frames.get(device_id) if device_id is not None else max(self.frames.values(),key=lambda f:f['time'],default=None)
             return frame.copy() if frame and time.monotonic()-frame['time']<2 else None
-    def snapshot(self):
+    def snapshot(self,device_id=None):
         with self.lock:
-            latest=max(self.frames.values(),key=lambda f:f['time'],default=None);age=(time.monotonic()-latest['time'])*1000 if latest else None
+            latest=self.frames.get(device_id) if device_id is not None else max(self.frames.values(),key=lambda f:f['time'],default=None);age=(time.monotonic()-latest['time'])*1000 if latest else None
             return dict(enabled=self.server is not None,port=self.port,error=self.error,paired_devices=len(self.devices),mirror_fresh=age is not None and age<2000,frame_age_ms=round(age,1) if age is not None else None,frame_seq=latest['seq'] if latest else 0,frame_bytes=len(latest['jpeg']) if latest else 0,stats=dict(self.stats),scope='App center-eye spectator preview; no system UI, audio or recording')
     def start(self):
         service=self

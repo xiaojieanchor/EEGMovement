@@ -39,6 +39,8 @@ configs/gnautilus_compute.json
 outputs/
 data/gnautilus/
 data/catalog/
+data/personal/
+docs/g-tec设备使用辅导视频/
 **/node_modules/
 .pytest_cache/
 .ruff_cache/

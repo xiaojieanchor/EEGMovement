@@ -63,6 +63,25 @@ class IntentControl:
             if self.identity!=identity or self.last_time is None or now-self.last_time>.5 or (self.last_sample is not None and sample<self.last_sample):
                 self.reset();self.identity=identity
             if sample==self.last_sample:return self.last or self.stopped('duplicate_model_update')
+            if result.get('control_policy')=='gnautilus_stream_decision_v1':
+                decision=result.get('navigation_decision') or {};direction=decision.get('direction')
+                policies={'gnautilus.causal_jepa_stream.v1':'motor_evidence_with_bounded_gaze_v1','gnautilus.causal_jepa_stream.v2':'shared_full32_joint_v2',
+                    'gnautilus.hybrid_navigation.v1':'bounded_eye_memory_navigation_v1','gnautilus.hybrid_navigation.v2':'factorized_navigation_v2','gnautilus.hybrid_navigation.v3':'factorized_navigation_v2','gnautilus.hybrid_navigation.v4':'threshold_aware_navigation_v1','gnautilus.hybrid_navigation.v5':'factorized_navigation_v2','gnautilus.hybrid_navigation.v6':'factorized_navigation_v2','gnautilus.hybrid_navigation.v7':'factorized_navigation_v2'}
+                expected=policies.get(result.get('runtime_schema'))
+                if expected is None or type(direction) is not int or not 0<=direction<=4 or decision.get('policy')!=expected:
+                    self.reset();return self.stopped('invalid_stream_decision')
+                linear=1 if direction==1 else -1 if direction==2 else 0
+                turn=1 if direction==4 else -1 if direction==3 else 0
+                self.last_time=now;self.last_sample=sample;self.decision_id+=1;self.direction=direction
+                self.last=dict(enabled=True,model_ready=True,active=direction>0,direction=direction,p_active=float(1-p[0]),confidence=float(p[direction]),
+                    motion_schema=2,linear_axis=linear,turn_axis=turn,linear_strength=float(bool(linear)),turn_strength=float(bool(turn)),
+                    linear_confidence=float(p[direction]) if linear else 0.,turn_confidence=float(p[direction]) if turn else 0.,
+                    linear_mass=float(p[1]+p[2]),turn_mass=float(p[3]+p[4]),action_label=action_label(linear,turn),
+                    output_schema='navigation_five_class',speed=self.speed,yaw_rate=self.yaw_rate,
+                    reason='experimental_model_active' if direction else 'stream_confirming_or_rejected',decision_id=self.decision_id,input_origin=origin,epoch=result['source_epoch'],
+                    probabilities=p.tolist(),raw_probabilities=p.tolist(),usable_channels=list(identity[1]),decision_owner='hub',
+                    evidence_policy=decision['policy'],auxiliary_status=result.get('auxiliary_status'),score_semantics=result.get('score_semantics'),learned_recurrent_head=True)
+                return dict(self.last)
             dt=.1 if self.last_time is None else max(.001,now-self.last_time)
             log=np.log(np.maximum(p,1e-8));alpha=1-math.exp(-dt/.15)
             self.logs=log if self.logs is None else (1-alpha)*self.logs+alpha*log

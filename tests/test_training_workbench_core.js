@@ -26,6 +26,10 @@ test('chart uses real epochs, keeps zero, excludes previous attempts and missing
  const rows=[{seq:1,message:'training_progress',data:{epoch:5,loss:2}},{seq:2,message:'resumed',data:{}},{seq:3,message:'training_progress',data:{epoch:1,loss:0,development_balanced_accuracy:0}},{seq:4,message:'input_verified',data:{}}];
  const points=core.curveRows(rows);assert.equal(points.length,1);assert.equal(points[0].epoch,1);assert.equal(points[0].loss,0);assert.equal(points[0].development_balanced_accuracy,0);
 });
+test('joint repair chart compares train and development CE instead of weighted total',()=>{
+ const [p]=core.curveRows([{seq:1,message:'jepa_progress',data:{epoch:5,variant:'jepa_transfer',seed:17,loss:1.8,training_joint_ce:1.5,validation_joint_ce:1.7}}]);
+ assert.equal(p.training_loss,1.5);assert.equal(p.development_loss,1.7);assert.equal(p.loss,1.8);
+});
 test('comparison requires identical data identity and class/input contract, never matching titles alone',()=>{
  const a={dataset_sha256:'a',class_labels:['UP','DOWN'],channels:['Fp1'],sampling_rate:500,window_s:1.5};
  assert.equal(core.comparable(a,{...a}),true);

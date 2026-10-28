@@ -72,6 +72,14 @@ class Runner:
                 if self.inference_enabled:self.registry.transition(jid,'waiting_resource');return
                 spec=job['spec'];self.registry.transition(jid,'preparing')
             dataset=read_json(self.root/'datasets'/(spec['dataset_id']+'.json'));protocol=read_json(self.root/'protocols'/(spec['protocol_id']+'.json'))
+            if spec.get('algorithm')=='causal_jepa_stream':
+                if protocol.get('schema') in ['gnautilus.training_protocol.v3','gnautilus.training_protocol.v4']:
+                    from .joint_training import run_joint_pilot
+                    run_joint_pilot(self,jid,dataset,protocol)
+                else:
+                    from .jepa_training import run_study
+                    run_study(self,jid,dataset,protocol)
+                return
             # A retry after failed registration reuses verified final artifacts.
             receipt=self.root/'logs'/(jid+'.artifact.json')
             if receipt.exists():

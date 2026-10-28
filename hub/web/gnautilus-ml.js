@@ -1,6 +1,7 @@
 'use strict';
 (function(root,factory){const api=factory();if(typeof module==='object'&&module.exports)module.exports=api;else root.GnautilusTraining=api;})(typeof window!=='undefined'?window:this,function(){
  const algorithms={bandpower_lda:'频带功率 / 收缩LDA',csp_lda:'正则化CSP / 收缩LDA',gaze_lda:'前额低频方向 / LDA',cnn_gru:'因果轻量CNN / 单向GRU',fusion:'眼动与运动想象 / 后融合',cnn_gru_baseline:'因果去基线 / 频带CNN＋GRU',fbcsp_lda:'多频带CSP / 收缩LDA',temporal_lda:'低频时域 / 收缩LDA',tangent_lda:'协方差切空间 / 收缩LDA',pipeline_ensemble:'训练组内选择 / 多层融合',gaze_pipeline:'眼动低频与形态 / 训练组内选择'};
+ algorithms.causal_jepa_stream='联合导航 / 有状态JEPA';
  const names={queued:'排队',preparing:'准备输入',waiting_resource:'等待计算资源',running:'训练／拟合',evaluating:'评估',exporting:'导出核对',registering:'登记模型库',completed:'完成并已收录',failed:'失败',cancelled:'已取消',interrupted:'中断待恢复'};
  const activeStates=['queued','preparing','waiting_resource','running','evaluating','exporting','registering'];
  const scopeNames={gaze:'公开眼动辅助研究',personal:'个人 g.Nautilus',motor:'公开运动想象方法基线',unknown:'其他／待核对'};
@@ -9,6 +10,7 @@
  const date=x=>finite(x)?new Date(x*1000).toLocaleString('zh-CN',{timeZone:'Asia/Shanghai',hour12:false}):'未上报';
  const alg=id=>algorithms[id]||id||'算法未上报';
  function scopeOf(d){
+  if(d?.schema==='gnautilus.personal_study.v1')return 'personal';
   const rows=d?.records||[];if(!rows.length)return 'unknown';
   if(rows.every(r=>r.reader==='gnautilus'||(!r.reader&&r.experiment_mode)))return 'personal';
   if(rows.every(r=>/malta|eegeyenet|eye_bci/i.test(r.reader||'')||r.experiment_mode==='gaze_only'))return 'gaze';
@@ -16,6 +18,11 @@
   return 'unknown';
  }
  function datasetSummary(d){
+  if(d?.schema==='gnautilus.personal_study.v1'){
+   const roles={};for(const r of d.episodes||[]){const role=r.split==='validation'?'development':r.split;roles[role]=(roles[role]||0)+1;}
+   const missing=[];if(!roles.train)missing.push('缺训练试次');if(!roles.development)missing.push('缺验证试次');if(!roles.test)missing.push('缺测试试次');
+   return {roles,scope:'personal',count:(d.episodes||[]).length,channels:'32路',rate:'250 Hz',reference:'独立硬件REF；实际位置未记录',subjects:['本人'],missing,canSubmit:!missing.length};
+  }
   const rows=d?.records||[],roles={},unique=k=>[...new Set(rows.map(r=>r[k]).filter(v=>v!==undefined&&v!==null&&v!==''))];
   rows.forEach(r=>roles[r.role||'unknown']=(roles[r.role||'unknown']||0)+1);
   const channels=[...new Set(rows.filter(r=>Array.isArray(r.channels)).map(r=>r.channels.length))];
@@ -32,7 +39,8 @@
     (!filter.query||[j.id,j.model_id,j.spec?.algorithm,alg(j.spec?.algorithm),d?.title,j.spec?.dataset_id].join(' ').toLowerCase().includes(filter.query.toLowerCase()));
   });
  }
- function curveRows(events){const reset=events.reduce((n,r,i)=>r.message==='resumed'?i:n,-1);return events.slice(reset+1).filter(r=>r.message==='training_progress'&&finite(r.data?.epoch)).map(r=>({...r.data,seq:r.seq}));}
+ function curveRows(events){const reset=events.reduce((n,r,i)=>r.message==='resumed'?i:n,-1);const rows=events.slice(reset+1).filter(r=>['training_progress','jepa_progress'].includes(r.message)&&finite(r.data?.epoch));const last=rows.at(-1)?.data;return rows.filter(r=>!last?.variant||(r.data.variant===last.variant&&r.data.seed===last.seed)).map(r=>({...r.data,training_loss:r.data.training_joint_ce??r.data.training_loss,development_loss:r.data.validation_joint_ce??r.data.development_loss,development_balanced_accuracy:r.data.validation_balanced_accuracy??r.data.development_balanced_accuracy,seq:r.seq}));}
+ const studyMethods={jepa_transfer:'公开迁移＋JEPA',transfer_no_jepa:'公开迁移／无JEPA对照',random_jepa:'随机初始化JEPA对照',finite_history_baseline:'有限历史监督对照'};
  function comparable(a,b){return !!a.dataset_sha256&&a.dataset_sha256===b.dataset_sha256&&!!a.class_labels?.length&&JSON.stringify(a.class_labels)===JSON.stringify(b.class_labels)&&!!a.channels?.length&&JSON.stringify(a.channels)===JSON.stringify(b.channels)&&finite(a.sampling_rate)&&a.sampling_rate===b.sampling_rate&&finite(a.window_s)&&a.window_s===b.window_s&&JSON.stringify(a.input_contract||null)===JSON.stringify(b.input_contract||null);}
  const field=(title,control)=>`<label class="gw-field"><span>${title}</span>${control}</label>`;
  const option=(v,t)=>`<option value="${e(v)}">${e(t)}</option>`;
@@ -45,7 +53,7 @@
   <div id="gmError" role="alert" class="gw-feedback" hidden></div><div id="gmNotice" role="status" class="gw-feedback gw-success" hidden></div>
   <section id="gwPane-overview" class="gw-pane" aria-labelledby="gwTab-overview">
    <div id="gwStats" class="gw-stats"></div>
-   <div class="gw-overview-grid"><article class="gw-card gw-focus"><span class="gw-kicker">CURRENT RESEARCH</span><h2>想象行走与转向，眼动提供辅助</h2><p>以第一人称体会前进、后退、左右转向的运动感觉；不指定手腿映射，可正常操作手柄。分别检查运动想象、眼动和融合，避免只学到眼动或手柄动作。</p><div class="gw-tags"><span>运动想象主分支</span><span>停止、回中与拒识</span><span>手柄／头动干扰</span></div><p class="gw-boundary">公开肢体想象用于方法基线，公开独立 EOG 用于辅助分支；两者都不直接证明个人行走／转向意图解码有效。</p><div class="gw-actions"><button type="button" class="button primary" data-pane="data">准备数据与训练 →</button><button type="button" class="button" data-pane="models">查看模型结果</button></div></article>
+   <div class="gw-overview-grid"><article class="gw-card gw-focus"><span class="gw-kicker">CURRENT RESEARCH</span><h2>想象行走与转向，眼动提供辅助</h2><p>以第一人称体会前进、后退、左右转向的运动感觉；不指定手腿映射，可正常操作手柄。利用方向眼动提供辅助提示，结合运动区证据判断开始、保持、回中和停止。</p><div class="gw-tags"><span>运动想象主分支</span><span>停止、回中与拒识</span><span>手柄／头动干扰</span></div><p class="gw-boundary">公开肢体想象用于方法基线，公开独立 EOG 用于辅助分支；两者都不直接证明个人行走／转向意图解码有效。</p><div class="gw-actions"><button type="button" class="button primary" data-pane="data">准备数据与训练 →</button><button type="button" class="button" data-pane="models">查看模型结果</button></div></article>
    <article class="gw-card"><div class="gw-heading"><h2>现在该做什么</h2><span class="gw-kicker">NEXT STEP</span></div><div id="gwNext"></div><hr><div id="gwCurrent"></div></article></div>
    <div class="gw-heading"><h2>最近任务</h2><button class="gw-link" type="button" data-pane="jobs">查看全部任务 →</button></div><div id="gwRecent" class="gw-recent"></div>
    <details class="gw-help"><summary>如何读这些数据</summary><p>训练 BA 反映已用于拟合的数据；开发 BA 用于方法比较和选模。BA 是各类别召回的平均，分组 BA 还按参与者或会话汇总。训练与开发要并列看，公开 EOG 分数不能当作个人 EEG 控制准确率。</p><p>接纳覆盖只描述有标签合格窗，完整连续流的质量覆盖、无控制误启动和头显效果另外验证。训练完成表示已导出并登记，不表示独立验收通过。</p></details>
@@ -93,8 +101,8 @@
   function updateReadiness(){
    const d=currentDataset(),summary=datasetSummary(d),ready=live();$('gmTrain').disabled=!ready||!summary.canSubmit||!$('gmAlgorithm').value||pending.has('train');
    set('gwTrainReadiness',!ready?'等待新鲜的服务器连接后才能提交。':!d?'先选择一份数据集。':summary.missing.length?summary.missing.join('；')+'，先补齐数据。':'训练／开发角色齐备，可提交服务器做完整治理核查。');
-   const neural=/^cnn_gru/.test($('gmAlgorithm').value);$('gmEpochs').disabled=!neural;
-   set('gwRecipe',neural?'神经网络按已提交轮次显示进度；轮数上限不是保证完成轮数。':'经典分类器按真实拟合阶段显示，不使用 epoch 百分比。');
+   const neural=/^cnn_gru|^causal_jepa_stream$/.test($('gmAlgorithm').value);$('gmEpochs').disabled=!neural;
+   set('gwRecipe',d?.schema==='gnautilus.personal_study.v1'?'联合导航JEPA · 固定三种子 · 连续状态；轮次显示实际个人适配进度。':neural?'神经网络按已提交轮次显示进度；轮数上限不是保证完成轮数。':'经典分类器按真实拟合阶段显示，不使用 epoch 百分比。');
    $('gmReplay').disabled=!ready||!modelSnapshot?.current_model_id||!d||pending.has('replay');
    set('gwReplaySelection','当前数据：'+(d?.title||'未选择')+'；模型：'+(modelSnapshot?.current_model_id?.slice(0,12)||'未加载'));
    host.querySelectorAll('[data-job-action]').forEach(b=>b.disabled=!ready||pending.has('job-action'));
@@ -118,11 +126,20 @@
   function renderDatasets(){
    const rows=filteredDatasets(),pages=Math.max(1,Math.ceil(rows.length/8));dataPage=Math.min(dataPage,pages-1);
    set('gwDataCount',dataLoaded?`${rows.length} / ${datasets.length} 份数据 · 个人记录与运动想象方法优先排列`:'数据目录尚未同步 · 连接后自动读取');
-   $('gwDatasets').innerHTML=rows.slice(dataPage*8,dataPage*8+8).map(d=>{const s=datasetSummary(d);return `<button type="button" class="gw-data-item" data-dataset="${e(d.id)}" aria-pressed="${d.id===$('gmDataset').value}"><span class="gw-muted">${e(scopeNames[s.scope])} · ${s.count} 段</span><strong>${e(d.title||'未命名数据集')}</strong><small>训练 ${s.roles.train||0} / 开发 ${s.roles.development||0} · ${s.channels} · ${s.rate}</small><code>${e(d.id.slice(0,12))}</code></button>`;}).join('')||(dataLoaded?'<p class="gw-empty">没有匹配的数据。可修改搜索、切换来源，或导入完整记录。</p>':'<p class="gw-empty">计算连接恢复后读取数据目录；已有任务和模型可查看最后回执。</p>');
+   $('gwDatasets').innerHTML=rows.slice(dataPage*8,dataPage*8+8).map(d=>{const s=datasetSummary(d);return `<button type="button" class="gw-data-item" data-dataset="${e(d.id)}" aria-pressed="${d.id===$('gmDataset').value}"><span class="gw-muted">${e(scopeNames[s.scope])} · ${s.count} 段</span><strong>${e(d.title||'未命名数据集')}</strong><small>训练 ${s.roles.train||0} / ${d.schema==='gnautilus.personal_study.v1'?'验证 '+(s.roles.development||0)+' / 测试 '+(s.roles.test||0):'开发 '+(s.roles.development||0)} · ${s.channels} · ${s.rate}</small><code>${e(d.id.slice(0,12))}</code></button>`;}).join('')||(dataLoaded?'<p class="gw-empty">没有匹配的数据。可修改搜索、切换来源，或导入完整记录。</p>':'<p class="gw-empty">计算连接恢复后读取数据目录；已有任务和模型可查看最后回执。</p>');
    set('gwDataPage',`${rows.length?dataPage+1:0} / ${rows.length?pages:0}`);$('gwDataPrev').disabled=!dataPage;$('gwDataNext').disabled=dataPage>=pages-1;
   }
   function datasetInfo(){
    const d=currentDataset(),s=datasetSummary(d);set('gwDatasetTitle',d?.title||'选择数据集');
+   const study=d?.schema==='gnautilus.personal_study.v1';
+   $('gmWindow').closest('label').querySelector('span').textContent=study?'真实输入预热（秒）':'历史窗口（秒）';
+   for(const o of $('gmAlgorithm').options||[])o.disabled=study?o.value!=='causal_jepa_stream':o.value==='causal_jepa_stream';
+   if(study){$('gmAlgorithm').value='causal_jepa_stream';$('gmSeed').value='17';$('gmSeed').disabled=true;$('gmEpochs').max='100';$('gmWindow').value='1.5';$('gmWindow').readOnly=true;
+    $('gmDatasetInfo').innerHTML=`<p>完整试次 ${s.count} 个：训练 ${s.roles.train||0}／验证 ${s.roles.development||0}／测试 ${s.roles.test||0}</p><p>32路 · 250 Hz · 联合导航想象与眼动辅助</p><p>1.5秒为真实输入预热，历史不以1.5秒截止；8秒为训练反传展开长度，连续状态不在此处清空。</p><p>稳定窗口比例约68.18%／15.98%／15.84%；头尾与保持段随完整试次保存。</p><p class="gw-boundary">同次佩戴内部研究；训练REST含官方来源差异。本轮仅用训练和验证开展修复小试，测试暂不打开，不代表跨佩戴效果。</p>`;
+    $('gwRecordDetails').innerHTML='<p>16=Cz，19=C5；原始列不重排。公开模型用于初始化与原任务教师；未标注段保持UNKNOWN。</p>';
+    updateReadiness();set('gwRecipe','32路联合编码＋公开权重迁移；本轮比较JEPA与无JEPA对照，种子17。预热1.5秒，训练展开最多8秒，持续保存状态。');renderDatasets();return;
+   }
+   $('gmSeed').disabled=false;$('gmEpochs').max='200';if($('gmAlgorithm').value==='causal_jepa_stream')$('gmAlgorithm').value='csp_lda';
    if(d?.prepared_window_s){$('gmWindow').value=d.prepared_window_s;$('gmWindow').readOnly=true;}else $('gmWindow').readOnly=false;
    const roles=`共${s.count}段，训练 ${s.roles.train||0} 段／开发 ${s.roles.development||0} 段`+(s.roles.test?`／测试角色 ${s.roles.test} 段`:'');
    $('gmDatasetInfo').innerHTML=`<p>${roles}</p><div class="gw-mini-stats">${metric('实际输入',e(s.channels),e(s.rate))}${metric('研究用途',e(scopeNames[s.scope]),d?.prepared_window_s?'已审核 '+d.prepared_window_s+' 秒窗':'按记录标签生成窗口')}</div><p><b>参考：</b>${e(s.reference)}</p><p class="gw-boundary">${s.scope==='gaze'?'公开眼动数据保留原生任务语义；独立EOG不直接代表32路头皮EEG控制效果。':s.scope==='motor'?'原生肢体想象用于方法基线；不能改名为行走／转向想象标签，后续需个人导航想象记录。':s.scope==='personal'?'个人训练与开发需要完整佩戴／会话分组；独立验收另行保留。':'来源未核对的项目保持未知。'}</p>`;
@@ -146,20 +163,20 @@
    set('gwJobDataset',jobDataset?'已关联数据：'+(datasets.find(d=>d.id===jobDataset)?.title||jobDataset)+' · 使用“清除筛选”查看其他数据':'每页最多 10 项，取消任务默认收起；选择任务查看曲线和模型。');renderJobDetail();
   }
   function modelForJob(j){return (modelSnapshot?.groups||[]).flatMap(g=>g.versions).find(v=>v.id===j?.model_id);}
-  function scoreResult(model){const t=model?.metrics?.training||model?.training||{},d=model?.metrics?.development||model?.development||{};return `<div class="gw-mini-stats">${metric('训练 BA',pct(t.balanced_accuracy??t.ba),'拟合结果')}${metric('开发 BA',pct(d.balanced_accuracy??d.ba),'已查看开发结果')}${metric('接纳覆盖',pct(d.selective?.coverage),'合格有标签窗口')}</div>`;}
+  function scoreResult(model){const t=model?.metrics?.training||model?.training||{},d=model?.metrics?.development||model?.development||{};return `<div class="gw-mini-stats">${metric('训练 BA',pct(t.balanced_accuracy??t.ba),'拟合结果')}${metric('开发 BA',pct(d.balanced_accuracy??d.ba),'已查看开发结果')}${metric('接纳覆盖',pct(d.coverage??d.selective?.coverage),['gnautilus.causal_jepa_stream.v1','gnautilus.causal_jepa_stream.v2'].includes(model?.runtime_schema)?'含预热／拒识的有标签更新':'合格有标签窗口')}</div>`;}
   function renderJobDetail(){
    const j=jobs.find(v=>v.id===jobId);if(!j)return;
    const d=datasets.find(v=>v.id===j.spec?.dataset_id),model=modelForJob(j),latest=curveRows(events).at(-1);
    set('gmLogTitle',alg(j.spec?.algorithm));set('gwJobBadge',names[j.state]||j.state);$('gwJobBadge').dataset.state=j.state;
-   const meta=`<p><b>${e(d?.title||datasetTitle(j.spec?.dataset_id))}</b></p><p class="gw-muted">第 ${e(j.attempt??'未知')} 次尝试 · 更新 ${date(j.updated)}${latest?' · 最近提交第 '+e(latest.epoch)+' / '+e(latest.total_epochs??'未知')+' 轮':''}</p><details class="gw-help"><summary>任务与协议身份</summary><p class="gw-identity">任务 ${e(j.id)}<br>数据 ${e(j.spec?.dataset_id||'未知')}<br>协议 ${e(j.spec?.protocol_id||'未知')}<br>模型 ${e(j.model_id||'尚未登记')}</p></details>`;
+   const meta=`<p><b>${e(d?.title||datasetTitle(j.spec?.dataset_id))}</b></p><p class="gw-muted">第 ${e(j.attempt??'未知')} 次尝试 · 更新 ${date(j.updated)}${latest?' · '+e(studyMethods[latest.variant]||'最近提交')+' · 第 '+e(latest.epoch)+(latest.total_epochs?' / '+e(latest.total_epochs):'')+' 轮':''}</p><details class="gw-help"><summary>任务与协议身份</summary><p class="gw-identity">任务 ${e(j.id)}<br>数据 ${e(j.spec?.dataset_id||'未知')}<br>协议 ${e(j.spec?.protocol_id||'未知')}<br>模型 ${e(j.model_id||'尚未登记')}</p></details>`;
    replaceIfChanged($('gwJobMeta'),meta);
    const phases=['queued','preparing','running','evaluating','exporting','registering','completed'],at=phases.indexOf(j.state==='waiting_resource'?'queued':j.state);
    replaceIfChanged($('gwPhases'),phases.map((v,i)=>`<li class="${i===at?'is-current':i<at?'is-done':''}">${e(names[v])}</li>`).join(''));
    const buttons=`<button type="button" class="button" data-job-data="${e(j.spec?.dataset_id||'')}">查看来源数据</button>`+(j.model_id?`<button type="button" class="button" data-job-model="${e(j.model_id)}">在模型库查看产物 →</button>`:'')+(activeStates.includes(j.state)?`<button type="button" class="button gw-danger" data-job-action="cancel">取消任务</button>`:['failed','interrupted','cancelled'].includes(j.state)?'<button type="button" class="button" data-job-action="resume">恢复任务（新尝试）</button>':'');
    replaceIfChanged($('gwJobActions'),buttons);
    const fail=[...events.slice(events.reduce((n,r,i)=>r.message==='resumed'?i:n,-1)+1)].reverse().find(v=>v.message==='task_failed');
-   let result=model?'<h3>已登记模型结果</h3>'+scoreResult(model)+`<p class="gw-muted">${e(model.evaluation_stage==='public_method_validation'?'公开方法开发验证':'个人开发验证')} · ${e(model.availability_reason||'输入兼容性待核对')}</p>`:j.state==='completed'?'<p class="gw-boundary">任务已收录，模型目录正在同步；可到模型库刷新查看。</p>':j.state==='failed'&&fail?'<p class="gw-failure">'+e(fail.data?.error||'任务失败，详见日志')+'</p>':'<p class="gw-muted">训练／拟合 → 评估 → 导出核对 → 模型库登记。登记成功后才显示完成。</p>';
-   if(model){const dev=model.metrics?.development||model.development||{},recall=Object.entries(dev.recall||{});if(recall.length)result+='<details class="gw-help" open><summary>各原生类别的开发召回</summary><div class="gw-recall">'+recall.map(([k,v])=>'<div><span>'+e(k)+'</span><strong>'+pct(v)+'</strong><i style="--recall:'+ (finite(v)?Math.max(0,Math.min(100,v*100)):0)+'%"></i></div>').join('')+'</div><p class="gw-muted">原生类别保持原名；目标角度正负、眼球位移和回中不自动换成导航方向。</p></details>';}
+   let result=model?'<h3>已登记模型结果</h3>'+scoreResult(model)+`<p class="gw-muted">${e(model.evaluation_stage==='same_wearing_internal_research'?'同次佩戴内部研究，控制效果待验收':model.evaluation_stage==='public_method_validation'?'公开方法开发验证':'个人开发验证')} · ${e(model.availability_reason||'输入兼容性待核对')}</p>`:j.state==='completed'?'<p class="gw-boundary">任务已收录，模型目录正在同步；可到模型库刷新查看。</p>':j.state==='failed'&&fail?'<p class="gw-failure">'+e(fail.data?.error||'任务失败，详见日志')+'</p>':'<p class="gw-muted">训练／拟合 → 评估 → 导出核对 → 模型库登记。登记成功后才显示完成。</p>';
+   if(model){const dev=model.metrics?.development||model.development||{},recall=Object.entries(dev.recall||{});if(recall.length)result+='<details class="gw-help" open><summary>各类别的开发召回</summary><div class="gw-recall">'+recall.map(([k,v])=>'<div><span>'+e(k)+'</span><strong>'+pct(v)+'</strong><i style="--recall:'+ (finite(v)?Math.max(0,Math.min(100,v*100)):0)+'%"></i></div>').join('')+'</div><p class="gw-muted">原生类别保持原名；目标角度正负、眼球位移和回中不自动换成导航方向。</p></details>';}
    replaceIfChanged($('gwJobResult'),result);
    updateReadiness();
   }
@@ -167,6 +184,14 @@
   const messageNames={input_verified:'输入核查通过',training_progress:'训练进度',evaluation:'评估结果',export_verified:'导出一致性核查通过',task_failed:'任务失败',resumed:'已恢复为新尝试',created:'已创建',cancelled:'已取消',...names};
   function eventSummary(row){
    const d=row.data||{},num=x=>finite(x)?x.toFixed(4):'—';
+   if(row.message==='jepa_progress'){
+    const prefix=(studyMethods[d.variant]?studyMethods[d.variant]+' · ':'')+'种子 '+(d.seed??'—')+' · ';
+    if(d.phase==='ssl_phase_reused')return prefix+'已核验并复用 '+(d.completed_steps??'—')+' 次JEPA预训练更新';
+    if(d.phase==='ssl')return prefix+'预训练 '+(d.step??'—')+' / '+(d.total_steps??'—')+' · 目标损失 '+num(d.loss);
+    if(d.phase==='native_teacher_cache')return prefix+'准备公开原任务教师 · '+(d.windows??'—')+' 个来源窗口';
+    if(d.phase==='personal_adaptation')return prefix+'完整试次适配第 '+(d.epoch??'—')+' 轮 · '+(finite(d.training_joint_ce)?'联合CE 训练 '+num(d.training_joint_ce)+'／开发 '+num(d.validation_joint_ce)+' · 训练BA '+pct(d.training_balanced_accuracy):'总损失 '+num(d.loss))+' · 开发BA '+pct(d.validation_balanced_accuracy);
+    if(d.phase==='candidate_complete')return prefix+'候选完成 · 开发BA '+pct(d.validation?.balanced_accuracy)+' · 接纳覆盖 '+pct(d.validation?.coverage);
+   }
    if(row.message==='training_progress')return '第 '+(d.epoch??'—')+' / '+(d.total_epochs??'—')+' 轮 · 训练损失 '+num(d.training_loss??d.loss)+' · 开发损失 '+num(d.development_loss)+' · 训练BA '+pct(d.training_balanced_accuracy)+' · 开发BA '+pct(d.development_balanced_accuracy);
    if(row.message==='input_verified')return '训练 '+(d.training_windows??'—')+' 窗 · 开发 '+(d.development_windows??'—')+' 窗 · '+(d.groups??'—')+' 个训练分组';
    if(row.message==='evaluation')return '训练BA '+pct(d.training?.balanced_accuracy)+' · 开发BA '+pct(d.development?.balanced_accuracy)+' · 独立测试另报';
@@ -186,7 +211,7 @@
    const x=p=>52+(p.epoch-minEpoch)/Math.max(1,maxEpoch-minEpoch)*600,y=v=>182-v/max*150;
    const line=(key,color,dash)=>{const rows=valid.filter(p=>finite(p[key]));return `<polyline fill="none" stroke="${color}" stroke-width="2.5" stroke-dasharray="${dash}" points="${rows.map(p=>x(p)+','+y(p[key])).join(' ')}"/>`+rows.map(p=>`<circle cx="${x(p)}" cy="${y(p[key])}" r="2.5" fill="${color}"><title>第 ${p.epoch} 轮 · ${ba?pct(p[key]):p[key].toFixed(4)}</title></circle>`).join('');};
    $('gmChart').innerHTML=`<path d="M52 32H652M52 107H652M52 182H652" stroke="#e0e8f1"/><text x="4" y="36">${ba?'100%':max.toFixed(2)}</text><text x="20" y="186">0</text><text x="52" y="210">第 ${minEpoch} 轮</text><text x="652" y="210" text-anchor="end">第 ${maxEpoch} 轮</text>`+line(keys[0],'#3768be','')+line(keys[1],'#177b68','6 4');
-   set('gwCurveNote',`${valid.length} 个已提交轮次 · 当前尝试 · 横轴为真实 epoch。${ba?'BA 为训练／开发评估，独立验收另报。':'损失反映拟合目标，不等于控制准确率。'}`);
+   set('gwCurveNote',`${valid.length} 个已提交轮次 · 当前尝试 · 横轴为真实 epoch。${ba?'BA 为训练／开发评估，独立验收另报。':points.some(p=>finite(p.training_joint_ce))?'实线为训练联合CE，虚线为开发联合CE；辅助损失另见日志，不等于控制准确率。':'损失反映拟合目标，不等于控制准确率。'}`);
   }
   async function selectJob(id,navigate=true){
    if(!filterJobs(jobs,datasets,{state:$('gwJobState').value,scope:$('gwJobScope').value,query:$('gwJobSearch').value.trim(),dataset:jobDataset}).some(j=>j.id===id)){jobDataset='';$('gwJobSearch').value='';$('gwJobScope').value='all';$('gwJobState').value='all';}
@@ -233,7 +258,7 @@
   $('gmCaptureApply').onclick=()=>action('capture',async()=>{await request('/api/ml/collection-profile',{experiment_mode:$('gmCaptureMode').value});notify('已设置下一次采集范式；当前不会启动录制。');});
   $('gmImport').onclick=()=>action('gmImport',async()=>{if(!$('gmRecord').value)throw Error('没有可导入的完整记录');const attrs={subject:$('gmSubject').value.trim(),date:$('gmDate').value,wearing_id:$('gmWearing').value.trim(),role:$('gmRole').value,experiment_mode:$('gmMode').value,reference:$('gmReference').value.trim(),electrical_policy:JSON.parse($('gmQuality').value)};set('gmImportStatus','核对并上传中…');try{const s=await request('/api/ml/datasets/import',{records:[{path:$('gmRecord').value,attributes:attrs}]});set('gmImportStatus','服务器已登记：'+s.dataset_id);$('gmCombineIds').value+=($('gmCombineIds').value?'\n':'')+s.dataset_id;await loadDatasets();}catch(ex){set('gmImportStatus','导入失败：'+ex.message);throw ex;}});
   $('gmCombine').onclick=()=>action('gmCombine',async()=>{const ids=$('gmCombineIds').value.split(/\s+/).filter(Boolean);if(ids.length<2)throw Error('至少选择两份已登记数据集');const s=await request('/api/ml/datasets/combine',{dataset_ids:ids,title:$('gmCombineTitle').value.trim()||'组合数据集'});await loadDatasets();$('gmDataset').value=s.dataset_id;datasetInfo();notify('组合数据已登记，请核对用途和输入合同。');});
-  $('gmTrain').onclick=()=>action('train',async()=>{if(!live())throw Error('连接未就绪');if(!datasetSummary(currentDataset()).canSubmit)throw Error('训练与开发记录未齐备');const window_s=Number($('gmWindow').value),max_epochs=Number($('gmEpochs').value),seed=Number($('gmSeed').value);if(!finite(window_s)||window_s<.5||window_s>5||!Number.isInteger(max_epochs)||max_epochs<1||max_epochs>200||!Number.isInteger(seed)||seed<0||seed>2147483647)throw Error('请核对窗口、轮数上限和随机种子的有效范围');const j=await request('/api/training/jobs',{dataset_id:$('gmDataset').value,algorithm:$('gmAlgorithm').value,window_s,max_epochs,seed,request_key:crypto.randomUUID()});jobDataset='';$('gwJobState').value='all';$('gwJobScope').value='all';$('gwJobSearch').value='';jobs=[j,...jobs.filter(v=>v.id!==j.id)];await selectJob(j.id);notify('训练任务已创建；完成导出与登记后出现在模型库。');await poll();});
+  $('gmTrain').onclick=()=>action('train',async()=>{if(!live())throw Error('连接未就绪');if(!datasetSummary(currentDataset()).canSubmit)throw Error('训练与开发记录未齐备');const window_s=Number($('gmWindow').value),max_epochs=Number($('gmEpochs').value),seed=Number($('gmSeed').value);if(!finite(window_s)||window_s<.5||window_s>5||!Number.isInteger(max_epochs)||max_epochs<1||max_epochs>200||!Number.isInteger(seed)||seed<0||seed>2147483647)throw Error('请核对窗口、轮数上限和随机种子的有效范围');const j=await request('/api/training/jobs',{dataset_id:$('gmDataset').value,algorithm:$('gmAlgorithm').value,...($('gmAlgorithm').value==='causal_jepa_stream'?{architecture:'shared_full32_joint_v2',ssl_steps:300}:{}),window_s,max_epochs,seed,request_key:crypto.randomUUID()});jobDataset='';$('gwJobState').value='all';$('gwJobScope').value='all';$('gwJobSearch').value='';jobs=[j,...jobs.filter(v=>v.id!==j.id)];await selectJob(j.id);notify('训练任务已创建；完成导出与登记后出现在模型库。');await poll();});
   $('gmReplay').onclick=()=>action('replay',async()=>{const s=await request('/api/ml/replay',{dataset_id:$('gmDataset').value,role:'development'});$('gwReplayResult').innerHTML=scoreResult({metrics:{development:s.metrics}})+'<p class="gw-muted">离线回放完成，推理与动作已停止。</p><details><summary>完整指标回执</summary><pre class="gw-json">'+e(JSON.stringify(s.metrics,null,2))+'</pre></details>';});
   $('gmModelImport').onclick=()=>action('gmModelImport',async()=>{await request('/api/models/import',{local_path:$('gmModelPath').value.trim()});notify('模型已登记，请刷新模型库。');});
   $('gmMatImport').onclick=()=>action('gmMatImport',async()=>{await request('/api/ml/import-matlab',{local_path:$('gmMatPath').value.trim(),metadata:JSON.parse($('gmMatMetadata').value)});notify('数值分类器已转换并登记，实时合同需另行核对。');});

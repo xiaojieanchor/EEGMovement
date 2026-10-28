@@ -5,6 +5,9 @@ import numpy as np
 from gnautilus_ml.common import atomic,read_json,within
 from gnautilus_ml.algorithms import ALGORITHMS
 
+def display_title(algorithm):
+    return '联合导航与眼动状态模型' if algorithm=='hybrid_navigation' else ALGORITHMS.get(algorithm,algorithm)
+
 class MLManager:
     def __init__(self,hub,root,bridge):
         self.hub=hub;self.root=Path(root);self.bridge=bridge;self.lock=threading.RLock();self.cached={'models':[],'jobs':[]};self.updated=0;self.error=None;self.switch={'state':'idle'}
@@ -64,14 +67,18 @@ class MLManager:
         count=sum(bool(m.get('runtime_accepted')) for m in self.cached.get('models',[]))
         if not fresh:code,message='compute_disconnected',('计算连接已暂停；请在设备页检查状态后重新连接' if self.bridge.auto_connect_suspended else '计算连接未就绪；中枢将按退避计划自动重连')
         elif not meta:code,message='model_not_loaded','等待恢复原先选择的模型；尚未选择时请到模型库选择'
-        elif not meta.get('runtime_accepted'):code,message='offline_model','已加载公开数据离线分类器，可做开发回放；当前没有匹配 g.Nautilus 实时输入的导航合同'
+        elif not meta.get('runtime_accepted'):code,message='offline_model',('已加载个人联合导航研究候选；本轮用于训练／开发分析，尚未配置实机实时合同' if meta.get('pilot') else '已加载公开数据离线分类器，可做开发回放；当前没有匹配 g.Nautilus 实时输入的导航合同')
         else:code,message='ready','模型实时合同已配置；启动后仍核对真实输入、连续性与电气质量'
         return dict(can_start=code=='ready',code=code,message=message,model_id=loaded if fresh else None,runtime_model_count=count)
     def request_refresh(self):
         if not self.bridge.status.get('ssh_connected'):raise ValueError('请先连接新的私有计算服务器')
         return self.refresh()
     def activate(self,data):
-        self.hub.intent.stop();self.switch={'state':'switching','id':data.get('id')}
+        with self.hub.lock:
+            if self.switching():raise ValueError('模型切换尚未完成')
+            if data.get('require_stopped') is True and (self.hub.intent.inference_enabled or self.hub.intent_control.snapshot().get('enabled')):raise ValueError('请先停止推理和模型动作，再切换模型')
+            self.switch={'state':'switching','id':data.get('id')}
+        self.hub.intent.stop()
         try:
             self.bridge.call('POST','/models/activate',data,timeout=20);self.refresh();self.switch={'state':'completed','id':data.get('id')}
         except Exception as error:self.switch={'state':'failed','message':str(error)};raise
@@ -85,8 +92,8 @@ class MLManager:
                 def score(key):
                     v=metrics.get(key) or {};return dict(ba=v.get('balanced_accuracy'),accuracy=v.get('accuracy'),semantics='已查看会话 · 含质量覆盖另报',recordings=v.get('recordings'),coverage=v.get('coverage'))
                 row=dict(m,id=m['model_id'],version=m['model_id'][:12],experiment=alg,completed=True,current=m['model_id']==loaded,
-                    can_activate=fresh,availability_reason='可加载；动作使用资格单独检查' if m.get('runtime_accepted') else '原生任务/离线分类器；不能直接输出实时导航',training=score('training'),development=score('development'),live_qualified=False)
-                groups.setdefault(alg,dict(id=alg,title=ALGORITHMS.get(alg,alg),versions=[]))['versions'].append(row)
+                    can_activate=fresh,availability_reason='可加载；动作使用资格单独检查' if m.get('runtime_accepted') else '个人联合导航研究候选；本轮用于训练／开发分析' if m.get('pilot') else '原生任务/离线分类器；不能直接输出实时导航',training=score('training'),development=score('development'),live_qualified=False)
+                groups.setdefault(alg,dict(id=alg,title=display_title(alg),versions=[]))['versions'].append(row)
             return dict(schema='gnautilus.models.v1',models=cache.get('models',[]),groups=list(groups.values()),total_versions=len(cache.get('models',[])),active={'model_id':loaded} if loaded else None,
                         current_model_id=loaded,selected_model_id=selected,server_connected=bool(self.bridge.status.get('ssh_connected')),remote_fresh=fresh,refreshed_at=self.updated or None,error=self.error,
                         refreshing=False,refresh_state='failed' if self.error else 'complete' if self.updated else 'idle',switching=self.switching(),switch=self.switch,read_only=False,restore=restore,
@@ -191,12 +198,19 @@ class MLIntent:
     def test_command(self,data):
         if data.get('action')=='release':return self.stop()
         raise ValueError('旧训练片段动作入口已归档；新数据回放不驱动动作')
+    def configure_control(self,data):
+        loaded=self.manager.cached.get('loaded')
+        meta=next((m for m in self.manager.cached.get('models',[]) if m['model_id']==loaded),{})
+        if meta.get('runtime_schema') in ['gnautilus.causal_jepa_stream.v1','gnautilus.causal_jepa_stream.v2','gnautilus.hybrid_navigation.v1','gnautilus.hybrid_navigation.v2','gnautilus.hybrid_navigation.v3','gnautilus.hybrid_navigation.v4','gnautilus.hybrid_navigation.v5','gnautilus.hybrid_navigation.v6','gnautilus.hybrid_navigation.v7'] and set(data)&{'active_threshold','direction_threshold','axis_mass_threshold'}:
+            raise ValueError('该模型的眼动辅助与回中门槛已随验证协议冻结，请创建新研究版本调整；实时页可独立启停动作')
+        return self.hub.intent_control.configure(data)
     def snapshot(self):
         with self.lock:
             fresh=bool(self.inference_enabled and self.latest and time.monotonic()-self.latest['input_origin_monotonic']<.25 and self.latest['source_epoch']==self.hub.epoch)
             meta=next((r for r in self.manager.cached.get('models',[]) if r['model_id']==self.model_id),None)
             current=self.model_id or self.manager.cached.get('loaded');meta=next((r for r in self.manager.cached.get('models',[]) if r['model_id']==current),None)
-            health=dict(model_id=current,weights_loaded=self.manager.cached.get('loaded')==current,algorithm_title=ALGORITHMS.get(meta['algorithm']),fusion_weight=meta.get('details',{}).get('fusion_weight'),labels=meta.get('class_labels'),evidence_ms=meta['window_s']*1000,hop_ms=meta['hop_s']*1000,training_fit=(meta.get('metrics') or {}).get('training'),development=(meta.get('metrics') or {}).get('development')) if meta else None
+            health=dict(model_id=current,weights_loaded=self.manager.cached.get('loaded')==current,algorithm_title=display_title(meta['algorithm']),fusion_weight=meta.get('details',{}).get('fusion_weight'),labels=meta.get('class_labels'),evidence_ms=meta['window_s']*1000,hop_ms=meta['hop_s']*1000,training_fit=(meta.get('metrics') or {}).get('training'),development=(meta.get('metrics') or {}).get('development')) if meta else None
+            if health:health.update(runtime_schema=meta.get('runtime_schema'),decision_policy=meta.get('details',{}).get('decision_policy'),intent_policy=meta.get('details',{}).get('intent_policy'),internal_test=(meta.get('metrics') or {}).get('internal_test'),deployment=meta.get('deployment'))
             return dict(schema='gnautilus.intent.v1',state=self.state,inference_state=self.state,inference_enabled=self.inference_enabled,enabled=self.inference_enabled,generation=self.generation,mode='LIVE',fresh=fresh,health=health,
                 model=self.model_id,latest=self.latest if fresh else None,error=self.error,rejection=self.rejection,control=self.hub.intent_control.snapshot(),training_test={'active':False},age_ms=(time.monotonic()-self.last_return)*1000 if self.last_return else None)
     def loop(self):
@@ -208,7 +222,11 @@ class MLIntent:
                 if meta is None:raise ValueError('Model metadata is not synchronized')
                 end=payload['sample_index_end']
                 if end==self.last_sample:continue
+                stream=meta.get('runtime_schema') in ['gnautilus.causal_jepa_stream.v1','gnautilus.causal_jepa_stream.v2','gnautilus.hybrid_navigation.v1','gnautilus.hybrid_navigation.v2','gnautilus.hybrid_navigation.v3','gnautilus.hybrid_navigation.v4','gnautilus.hybrid_navigation.v5','gnautilus.hybrid_navigation.v6','gnautilus.hybrid_navigation.v7']
                 d=payload['descriptor'];indices=[i for i,c in enumerate(d['channels']) if c['kind']=='EEG'];n=round(meta['window_s']*d['sampling_rate'])
+                if stream and self.last_sample is not None:
+                    n=end-self.last_sample
+                    if not 0<n<=min(2000,len(payload['samples'])):raise ValueError('sample_gap_or_reorder: incremental history unavailable')
                 if len(payload['samples'])<n:self.state='warming';continue
                 origin=payload['input_origin_monotonic'];history=payload['samples'][-n:];validation=[i for i,c in enumerate(d['channels']) if c['kind']=='VALIDATION']
                 device_valid=bool(np.all(history[:,validation]==1)) if validation else None
@@ -224,10 +242,21 @@ class MLIntent:
                         self.remote_generation=lease['generation']
                 request=dict(descriptor=d,model_id=self.model_id,generation=self.remote_generation,stream_id=payload['stream_id'],source_epoch=payload['source_epoch'],sample_index_end=end,
                     samples=history[:,indices].T.tolist(),device_valid=device_valid)
+                if stream:request['sample_index_start']=end-n
                 result=self.manager.bridge.call('POST','/inference/predict',request,timeout=2)
                 if generation!=self.generation or not self.inference_enabled or result['source_epoch']!=self.hub.epoch or result['sample_index_end']!=end or result['model_id']!=self.model_id:continue
+                if stream and result.get('duplicate'):continue
+                if stream and result.get('new_prediction_updates')==0 and not result.get('warming'):
+                    with self.lock:self.last_sample=end
+                    continue
+                if stream and origin is not None:origin-=(end-result.get('prediction_sample_index_end',end))/d['sampling_rate']
                 if origin is None or not 0<=time.monotonic()-origin<.25:raise ValueError('late_return: 输入已超过250ms')
-                p=result['probabilities'];active=1-p[0];result.update(source='LIVE',input_origin_monotonic=origin,usable_channels=indices,channel_names=[d['channels'][i]['name'] for i in indices],control_policy='gnautilus_fixed_speed_v1',classifier_family=meta['algorithm'],
+                if stream and result.get('warming'):
+                    with self.lock:
+                        if generation!=self.generation or not self.inference_enabled:continue
+                        self.last_sample=end;self.latest=None;self.state='warming'
+                    continue
+                p=result['probabilities'];active=1-p[0];result.update(source='LIVE',input_origin_monotonic=origin,usable_channels=indices,channel_names=meta.get('channels') if stream else [d['channels'][i]['name'] for i in indices],control_policy='gnautilus_stream_decision_v1' if stream else 'gnautilus_fixed_speed_v1',classifier_family=meta['algorithm'],
                     active_probability=active,direction_probabilities=[v/active if active>1e-9 else 0 for v in p[1:]],roundtrip_ms=(time.monotonic()-started)*1000,input_age_ms=(time.monotonic()-origin)*1000,
                     input_advance_ms=(end-self.last_sample)/d['sampling_rate']*1000 if self.last_sample is not None else None)
                 with self.lock:
@@ -236,7 +265,7 @@ class MLIntent:
             except Exception as error:
                 with self.lock:self.latest=None;self.state='waiting_input';self.error=str(error);self.rejection=str(error)
                 self.hub.intent_control.update(None)
-                if isinstance(error,(ConnectionError,OSError)) or 'lease expired' in str(error) or 'generation/model' in str(error):self.invalidate(str(error),preserve_mode=True)
+                if isinstance(error,(ConnectionError,OSError)) or any(v in str(error) for v in ['lease expired','generation/model','gap_or_reorder','identity_changed','state reset','device-invalid','late_return']):self.invalidate(str(error),preserve_mode=True)
     def readiness(self):
         snap=self.snapshot();prediction=snap['latest'];collecting=bool(self.hub.recorder or self.hub.acquisition.snapshot().get('active') or self.manager.switching())
         decision=self.hub.intent_control.update(prediction if snap['fresh'] else None,collecting)

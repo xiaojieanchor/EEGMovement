@@ -32,6 +32,51 @@ def check_runtime(profile):
     return 'cuda:0'
 
 def check_protocol(protocol,dataset,code_root):
+    if protocol.get('schema')=='gnautilus.covariance_spectrum_study.v1':
+        from .covariance_spectrum_study import check_protocol as check_covariance_spectrum
+        return check_covariance_spectrum(protocol,dataset,code_root)
+    if protocol.get('schema')=='gnautilus.readout_policy_study.v1':
+        from .readout_policy_study import check_protocol as check_readout_policy
+        return check_readout_policy(protocol,dataset,code_root)
+    if protocol.get('schema')=='gnautilus.fine_spectrum_study.v1':
+        from .fine_spectrum_study import check_protocol as check_fine_spectrum
+        return check_fine_spectrum(protocol,dataset,code_root)
+    if protocol.get('schema')=='gnautilus.lda_view_study.v1':
+        from .lda_view_study import check_protocol as check_lda_view
+        return check_lda_view(protocol,dataset,code_root)
+    if protocol.get('schema')=='gnautilus.spectral_view_study.v1':
+        from .spectral_view_study import check_protocol as check_spectral
+        return check_spectral(protocol,dataset,code_root)
+    if protocol.get('schema')=='gnautilus.navigation_stability_study.v1':
+        from .navigation_stability_study import check_protocol as check_navigation_stability
+        return check_navigation_stability(protocol,dataset,code_root)
+    if protocol.get('schema')=='gnautilus.event_policy_study.v1':
+        from .event_policy_study import check_protocol as check_events
+        return check_events(protocol,dataset,code_root)
+    if protocol.get('schema')=='gnautilus.intent_repair_training.v1':
+        from .intent_repair_training import check_protocol as check_repair
+        return check_repair(protocol,dataset,code_root)
+    if protocol.get('schema') in ['gnautilus.hybrid_navigation_training.v1','gnautilus.hybrid_navigation_training.v2']:
+        from .hybrid_training import check_protocol as check_hybrid
+        return check_hybrid(protocol,dataset,code_root)
+    if protocol.get('schema')=='gnautilus.manual_ocular_training.v1':
+        from .ocular_event_training import check_protocol as check_manual_ocular
+        return check_manual_ocular(protocol,dataset,code_root)
+    if protocol.get('schema')=='gnautilus.contextual_readout_protocol.v1':
+        from .contextual_readout import check_protocol as check_contextual_readout
+        return check_contextual_readout(protocol,dataset,code_root)
+    if protocol.get('schema')=='gnautilus.eye_weight_probe_protocol.v1':
+        from .eye_weight_probe import check_protocol as check_eye_weight
+        return check_eye_weight(protocol,dataset,code_root)
+    if protocol.get('schema')=='gnautilus.eye_joint_probe_protocol.v1':
+        from .eye_joint_probe import check_probe_protocol
+        return check_probe_protocol(protocol,dataset,code_root)
+    if protocol.get('schema') in ['gnautilus.training_protocol.v3','gnautilus.training_protocol.v4']:
+        from .joint_training import check_joint_protocol
+        return check_joint_protocol(protocol,dataset,code_root)
+    if protocol.get('schema')=='gnautilus.training_protocol.v2':
+        from .personal_study import check_study_protocol
+        return check_study_protocol(protocol,dataset,code_root)
     if protocol.get('schema')!='gnautilus.training_protocol.v1':raise ValueError('Locked new-device protocol required')
     if protocol.get('dataset_sha256')!=digest(dataset):raise ValueError('Dataset differs from locked protocol')
     from .algorithms import ALGORITHMS

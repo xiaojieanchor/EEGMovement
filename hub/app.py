@@ -38,6 +38,8 @@ class Hub:
         self.intent_control=IntentControl(config.get('experimental_motion_enabled',False))
         self.closed_stats={k:0 for k in self.parser.stats};self.reconnects=0;self.replay_session=None;self.reconnect_after=0
         self.acquisition=GuidedAcquisition(self)
+        from .ocular_annotations import OcularAnnotationStore
+        self.ocular_annotations=OcularAnnotationStore(ROOT)
         self.calibration=SessionCalibration(self)
         self.refactor=RefactorObserver(self,ROOT)
         from .model_library import ModelLibrary
@@ -66,6 +68,8 @@ class Hub:
             from .ml_runtime import MLManager,MLIntent
             self.remote=ComputeBridge(ROOT,self.event)
             self.ml=MLManager(self,ROOT,self.remote);self.model_library=self.ml;self.intent=MLIntent(self,self.ml)
+            from .immersive import ImmersiveWorkspace
+            self.immersive=ImmersiveWorkspace(self)
             self.config.update(server_host=self.remote.profile['host'],server_port=self.remote.profile['port'],server_user=self.remote.profile['username'])
         self.public_relay=None
         relay_config=ROOT/'hub/runtime/public_relay.json'
@@ -77,7 +81,7 @@ class Hub:
     def start(self):
         if self.new_device_mode:
             self.gnautilus_runtime.start();self.vr.start()
-            for name,target in [('model catalog',self.ml.loop),('new-device inference',self.intent.loop)]:threading.Thread(target=target,daemon=True,name=name).start()
+            for name,target in [('model catalog',self.ml.loop),('new-device inference',self.intent.loop),('continuous quality',self.immersive.loop)]:threading.Thread(target=target,daemon=True,name=name).start()
             if self.quest:self.quest.start()
             if self.public_relay:self.public_relay.start()
             return
@@ -402,10 +406,25 @@ class Handler(BaseHTTPRequestHandler):
     def do_GET(self):
         if not self.allowed():return self.send(403,{'error':'local origin required'})
         path=urlparse(self.path).path
+        if path.startswith('/api/ocular-annotations'):
+            try:
+                if path=='/api/ocular-annotations':return self.send(200,HUB.ocular_annotations.catalog())
+                if path=='/api/ocular-annotations/export':return self.send(200,HUB.ocular_annotations.export())
+                if path.startswith('/api/ocular-annotations/trials/'):return self.send(200,HUB.ocular_annotations.trial(path.rsplit('/',1)[-1]))
+                return self.send(404,{'error':'not found'})
+            except (ValueError,OSError,KeyError) as error:return self.send(400,{'error':str(error)})
         if HUB.new_device_mode and (path.startswith('/api/ml/') or path.startswith('/api/training/jobs')):
             try:return self.send(200,HUB.ml.api_get(self.path))
             except (ValueError,OSError,ConnectionError) as error:return self.send(400,{'error':str(error)})
         if path=='/api/status':return self.send(200,HUB.snapshot())
+        if path in ('/api/immersive/status','/api/immersive/signal'):
+            if not HUB.new_device_mode:return self.send(409,dict(error='需要 g.Nautilus 工作空间'))
+            query=parse_qs(urlparse(self.path).query)
+            try:
+                if path.endswith('/status'):value=HUB.immersive.status(query.get('receiver_id',[None])[0])
+                else:value=HUB.immersive.signal(int(query['epoch'][0]) if 'epoch' in query else None,int(query['after'][0]) if 'after' in query else None)
+                return self.send(200,value)
+            except (ValueError,KeyError,TypeError) as error:return self.send(400,dict(error=str(error)))
         if path=='/api/gnautilus/status':return self.send(200,HUB.gnautilus_runtime.snapshot()['gnautilus'] if HUB.new_device_mode else {'enabled':False})
         if path=='/api/relay/status':return self.send(200,HUB.public_relay.snapshot() if HUB.public_relay else {'enabled':False})
         if path=='/api/relay/enrollment':
@@ -453,9 +472,9 @@ class Handler(BaseHTTPRequestHandler):
         if path=='/api/sessions':return self.send(200,list_sessions(ROOT/'outputs/sessions'))
         if path=='/api/acquisition/status':return self.send(200,HUB.acquisition.snapshot())
         if path=='/api/acquisition/sync':return self.send(200,HUB.acquisition.sync())
-        if path=='/api/quest/status':return self.send(200,HUB.quest.snapshot() if HUB.quest else dict(enabled=False,mirror_fresh=False))
+        if path=='/api/quest/status':return self.send(200,HUB.quest.snapshot(parse_qs(urlparse(self.path).query).get('device_id',[None])[0]) if HUB.quest else dict(enabled=False,mirror_fresh=False))
         if path=='/api/quest/frame.jpg':
-            frame=HUB.quest.frame() if HUB.quest else None
+            frame=HUB.quest.frame(parse_qs(urlparse(self.path).query).get('device_id',[None])[0]) if HUB.quest else None
             return self.send(200,frame['jpeg'],'image/jpeg') if frame else self.send(503,dict(error='No fresh Quest frame'))
         if path=='/api/config':return self.send(200,{k:v for k,v in HUB.config.items() if k not in ['ssh_hostkey_sha256']})
         names={'/':'index.html','/app.js':'app.js','/style.css':'style.css','/lab':'lab.html','/lab.js':'lab.js','/lab.css':'lab.css','/ui-state.js':'ui-state.js','/workspace.css':'workspace.css','/quest.js':'quest.js','/vr-preview':'vr-preview.html'}
@@ -466,6 +485,8 @@ class Handler(BaseHTTPRequestHandler):
         names.update({'/model-library.js':'model-library.js','/model-library.css':'model-library.css'})
         names.update({'/gnautilus-ml.js':'gnautilus-ml.js'})
         names.update({'/gnautilus':'index.html','/gnautilus.js':'gnautilus.js','/gnautilus.css':'gnautilus.css'})
+        names.update({'/annotations':'ocular-annotations.html','/ocular-annotations.js':'ocular-annotations.js','/ocular-annotations-core.js':'ocular-annotations-core.js','/ocular-annotations.css':'ocular-annotations.css'})
+        names.update({'/immersive.js':'immersive.js','/immersive.css':'immersive.css','/immersive-core.js':'immersive-core.js','/telemetry-scene.js':'telemetry-scene.js'})
         if path not in names:return self.send(404,{'error':'not found'})
         file=ROOT/'hub/web'/names[path];body=file.read_bytes()
         if file.suffix=='.html':body=annotate_html(body,HUB.transition['legacy_archived'])
@@ -476,6 +497,11 @@ class Handler(BaseHTTPRequestHandler):
         if n>8192:return self.send(413,{'error':'request too large'})
         try:
             data=json.loads(self.rfile.read(n) or b'{}')
+            if self.path=='/api/ocular-annotations/save':
+                from .ocular_annotations import AnnotationConflict
+                try:return self.send(200,HUB.ocular_annotations.save(data))
+                except AnnotationConflict as error:return self.send(409,{'error':str(error),'code':'annotation_conflict'})
+                except (OSError,KeyError,TypeError,ValueError) as error:return self.send(400,{'error':str(error)})
             if HUB.new_device_mode and (self.path.startswith('/api/ml/') or self.path.startswith('/api/training/jobs') or self.path=='/api/models/import'):
                 return self.send(200,HUB.ml.api_post(self.path,data))
             if retired_action(self.path,data,HUB.transition['legacy_archived'],HUB.new_device_mode):
@@ -513,15 +539,26 @@ class Handler(BaseHTTPRequestHandler):
             elif self.path=='/api/acquisition/stop':return self.send(200,HUB.acquisition.stop_client(data))
             elif self.path=='/api/intent/replay':HUB.intent.start_replay(data.get('session'),data.get('head','heldout'))
             elif self.path=='/api/intent/live':HUB.intent.stop_replay()
-            elif self.path=='/api/intent/start':return self.send(200,HUB.intent.start(data.get('purpose','normal')))
+            elif self.path=='/api/intent/start':
+                if data.get('immersive') is True:
+                    check=HUB.immersive.status(data.get('receiver_id'))
+                    if not check['can_start']:raise ValueError('；'.join(r['message'] for r in check['blockers']) or '等待模型所需通道的软件电气质量通过')
+                    with HUB.vr.lock:HUB.vr.model_receiver_id=check['vr']['target']['receiver_id']
+                return self.send(200,HUB.intent.start(data.get('purpose','normal')))
             elif self.path=='/api/intent/test':return self.send(200,HUB.intent.test_command(data))
             elif self.path=='/api/intent/stop':return self.send(200,HUB.intent.stop())
             elif self.path=='/api/intent/control':
                 with HUB.lock:
+                    if data.get('immersive') is True:
+                        if data.get('enabled'):
+                            check=HUB.immersive.status(data.get('receiver_id'))
+                            if not check['can_start']:raise ValueError('四端、模型或通道质量未满足，不能开启动作')
+                            with HUB.vr.lock:HUB.vr.model_receiver_id=check['vr']['target']['receiver_id']
+                        data={k:v for k,v in data.items() if k not in ('immersive','receiver_id')}
                     if getattr(HUB,'model_library',None) and HUB.model_library.switching():raise ValueError('模型正在切换，请等待加载结果')
                     if data.get('enabled') and not HUB.intent.snapshot()['inference_enabled']:raise ValueError('请先启动实时推理，再允许模型动作')
                     if data.get('enabled') and HUB.new_device_mode and not HUB.intent.snapshot()['fresh']:raise ValueError('推理仍在等待或预热，请在新鲜结果恢复后重新允许动作')
-                    return self.send(200,HUB.intent_control.configure(data))
+                    return self.send(200,HUB.intent.configure_control(data) if HUB.new_device_mode else HUB.intent_control.configure(data))
             elif self.path=='/api/source':HUB.set_source(data['mode'],data.get('session'))
             elif self.path=='/api/server/connect':
                 password=data.get('password','')
