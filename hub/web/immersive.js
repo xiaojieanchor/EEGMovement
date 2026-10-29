@@ -60,10 +60,10 @@
   link('Hub',v.current,v.current?'在线':'状态过期','本机中枢 · '+num(s.hub?.uptime_s,0)+' s');
   link('Source',v.source,v.source?'信号接收中':'等待数据',num(s.source?.age_ms,0)+' ms · '+readable(s.source?.transport,transportNames,'未知通道'));
   link('Compute',v.current&&s.compute?.fresh,s.compute?.fresh&&v.current?'计算已连接':'等待计算',num(s.compute?.roundtrip_ms,0)+' ms · SSH');
-  link('Vr',v.vr,v.vr?'执行回执在线':'等待回执',num(s.vr?.target?.telemetry_age_ms,0)+' ms · '+(s.vr?.target?.receiver_id?.slice(0,6)||'未选择'));
+  link('Vr',v.vr,v.vr?'执行回执在线':'等待回执',(s.vr?.target?.transport_label||'通路未知')+' · '+num(s.vr?.target?.telemetry_age_ms,0)+' ms · '+(s.vr?.target?.receiver_id?.slice(0,6)||'未选择'));
   if(s.mode==='OFFLINE_REPLAY'){link('Source',v.source,'回放输入',num(s.source?.age_ms,0)+' ms · 原记录');link('Vr',v.vr,'软件夹具','合成回执 · 非真实头显')}
   const target=s.vr?.target;if(!selectedReceiver&&target)selectedReceiver=target.receiver_id;
-  options($('imsReceiver'),[{id:'',title:'选择目标 VR'},...(s.vr?.clients||[]).map(c=>({id:c.receiver_id,title:(c.telemetry?.app_version||'Unity')+' · '+c.receiver_id.slice(0,8)+(c.online?'':' · 离线')}))],selectedReceiver);
+  options($('imsReceiver'),[{id:'',title:'选择目标 VR'},...(s.vr?.clients||[]).map(c=>({id:c.receiver_id,title:(c.telemetry?.app_version||'Unity')+' · '+(c.transport_label||'通路未知')+' · '+c.receiver_id.slice(0,8)+(c.online?'':' · 离线')}))],selectedReceiver);
   const selectedModel=$('imsModels').value;
   options($('imsModels'),(s.models||[]).map(m=>({id:m.id,title:(m.deployment?.stage==='experimental_live_v1'?'阶段一 · 实验性实时推理':m.title)+' · '+m.id.slice(0,8)+(m.runtime_accepted?'':' · 离线'),disabled:!m.runtime_accepted})),selectedModel||model?.model_id);
   $('imsModels').disabled=pending||i.inference_enabled||i.control?.enabled||!s.compute?.fresh;

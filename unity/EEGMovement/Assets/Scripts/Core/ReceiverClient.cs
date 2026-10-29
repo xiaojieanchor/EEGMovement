@@ -29,9 +29,12 @@ namespace EEGMovement.Core
         readonly RuntimeHealth health = new RuntimeHealth();
         bool hasHealth;
         Action<byte[]> relaySend;
-        public void SetRelay(Action<byte[]> sender,byte[] relayKey) { lock(gate){relaySend=sender;key=(byte[])relayKey.Clone();pending.Clear();Core.ResetPairing();Core.EmergencyLatched=true;Core.Brake("relay_manual_resume_required");} }
+        bool managedRoute;
+        public string Transport {get {lock(gate)return relaySend!=null?"公网中继":config!=null?(config.host=="127.0.0.1"?"内网 · 本机":"内网直连"):"等待连接";}}
+        public void SetRelay(Action<byte[]> sender,byte[] relayKey) { lock(gate){managedRoute=true;relaySend=sender;key=(byte[])relayKey.Clone();pending.Clear();Core.ResetPairing();Core.EmergencyLatched=true;Core.Brake("relay_manual_resume_required");} }
+        public void SetLan(PairingConfig next) { PairingAddress.Parse(next.host,"lan",next.explicit_host);byte[] nextKey=Wire.Key(next.key);if(next.port<1024||next.port>65535)throw new ArgumentException("Invalid LAN port");lock(gate){managedRoute=true;relaySend=null;config=next;key=nextKey;pending.Clear();Core.ResetPairing();Core.EmergencyLatched=true;Core.Brake("lan_manual_resume_required");LastError=null;} }
         public void RelayDisconnected() { lock(gate){pending.Clear();Core.ResetPairing();Core.EmergencyLatched=true;Core.Brake("relay_disconnected");} }
-        public void AcceptRelay(byte[] data) { try{Packet p=Wire.Decode(data,key,codec);lock(gate){if(pending.Count>=8){pending.Dequeue();queueDrops++;}pending.Enqueue(p);}}catch(Exception){Interlocked.Increment(ref invalidWire);} }
+        public void AcceptRelay(byte[] data) { try{lock(gate){if(relaySend==null)return;Packet p=Wire.Decode(data,key,codec);if(pending.Count>=8){pending.Dequeue();queueDrops++;}pending.Enqueue(p);}}catch(Exception){Interlocked.Increment(ref invalidWire);} }
         public string LastError { get; private set; }
         public static double Now { get { return Stopwatch.GetTimestamp() * 1000.0 / Stopwatch.Frequency; } }
         public ReceiverClient(string path, int listenPort, string role, bool allowTest, IJsonCodec json, int hubPort = 0)
@@ -45,7 +48,7 @@ namespace EEGMovement.Core
         }
         void ReloadConfig()
         {
-            if(relaySend!=null)return;
+            if(managedRoute)return;
             double now = Now;
             if (now - lastConfigCheck < 1000) return;
             lastConfigCheck = now;
@@ -78,6 +81,7 @@ namespace EEGMovement.Core
                     Packet packet = Wire.Decode(data, currentKey, codec);
                     lock (gate)
                     {
+                        if(relaySend!=null||!ReferenceEquals(cfg,config))continue;
                         if (pending.Count >= 8) { pending.Dequeue(); queueDrops++; }
                         pending.Enqueue(packet);
                     }

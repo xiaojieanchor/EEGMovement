@@ -97,6 +97,31 @@ def test_inference_enabled_survives_loss_and_reacquires_same_model_lease():
     hub.intent_control.configure.assert_called_with({'enabled':False})
 
 
+def test_explicit_start_without_eeg_waits_without_predicting_or_arming_motion():
+    hub,intent=inference_fixture()
+    intent.manager.inference_readiness=lambda:dict(can_start=True)
+    hub.gnautilus_runtime.model_input=Mock(side_effect=ValueError('Fresh verified-origin input required'))
+    original=intent.manager.bridge.call
+    intent.manager.bridge.call=Mock(side_effect=original)
+    intent.snapshot=Mock(return_value={})
+    intent.start()
+    assert intent.inference_enabled and intent.state=='waiting_input'
+    intent.loop()
+    assert intent.inference_enabled and intent.latest is None and intent.state=='waiting_input'
+    assert not any(c.args[1]=='/inference/predict' for c in intent.manager.bridge.call.call_args_list)
+    hub.intent_control.configure.assert_called_with({'enabled':False})
+    intent.stop();assert not intent.inference_enabled
+
+
+def test_waiting_mode_cannot_start_an_unready_model():
+    import pytest
+    hub,intent=inference_fixture()
+    intent.manager.inference_readiness=lambda:dict(can_start=False,message='Model contract not ready')
+    intent.manager.bridge.call=Mock()
+    with pytest.raises(ValueError,match='Model contract not ready'):intent.start()
+    intent.manager.bridge.call.assert_not_called()
+
+
 def test_manual_stop_during_recovery_cannot_be_undone_by_late_reply():
     hub,intent=inference_fixture()
     intent.invalidate('transport_error',preserve_mode=True)

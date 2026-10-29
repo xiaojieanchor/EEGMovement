@@ -176,7 +176,12 @@ class MLIntent:
     def catalog(self):return {'schema':'gnautilus.replay.v1','records':[],'reason':'在训练工作台选择已登记数据集，回放不会进入实时动作'}
     def start(self,purpose='normal'):
         if purpose!='normal':raise ValueError('新设备诊断请使用工作台的独立离线回放')
-        self.hub.gnautilus_runtime.model_input();self.stop();tag=self.generation;reply=self.manager.bridge.call('POST','/inference/start',{})
+        # Starting requests a mode, not permission to consume missing data or
+        # move. Per-frame verified-origin/continuity/quality checks remain in
+        # model_input and loop; a temporary outage may keep this mode waiting.
+        readiness=self.manager.inference_readiness()
+        if not readiness['can_start']:raise ValueError(readiness['message'])
+        self.stop();tag=self.generation;reply=self.manager.bridge.call('POST','/inference/start',{})
         with self.lock:
             if self.generation!=tag:raise ValueError('Input changed while starting inference; restart manually')
             self.inference_enabled=True;self.remote_generation=reply['generation'];self.model_id=reply['model_id'];self.state='waiting_input';self.generation+=1;self.error=None

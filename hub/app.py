@@ -467,7 +467,7 @@ class Handler(BaseHTTPRequestHandler):
             return self.send(200,HUB.ml.preparation(state) if HUB.new_device_mode else HUB.preparation.snapshot(state))
         if path=='/api/vr/status':
             state=HUB.snapshot()
-            return self.send(200,dict(source={k:state['source'][k] for k in ['mode','connected','fresh','sfreq_measured','age_ms']},quality={k:state['quality'][k] for k in ['valid','good_channels']},server=dict(worker_connected=state['server']['worker_connected'],device=(state['server']['last_health'] or {}).get('device')),vr=state['vr']))
+            return self.send(200,dict(source={k:state['source'].get(k) for k in ['mode','connected','fresh','sfreq_measured','age_ms','transport','transport_label']},quality={k:state['quality'][k] for k in ['valid','good_channels']},server=dict(worker_connected=state['server']['worker_connected'],device=(state['server']['last_health'] or {}).get('device')),vr=state['vr']))
         if path=='/api/vr/validation':
             report=ROOT/'outputs/execution_validation.json'
             return self.send(200,json.loads(report.read_text(encoding='utf-8')) if report.exists() else {'status':'not_run'})

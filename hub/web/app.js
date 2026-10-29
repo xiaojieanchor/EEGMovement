@@ -35,7 +35,7 @@ function updateGnautilus(s){
  const computeReady=rs.ssh_connected&&rs.worker_connected,phase={network_inspection:'检测网卡',tcp_physical:'物理网卡连接',tcp_system:'系统路由连接',ssh_authentication:'SSH认证',service_token:'读取服务凭据',service_health:'核验模型服务'}[rs.connect_stage]||'准备连接';
  const computeMessage=computeReady?'A100服务已连接':rs.connecting?'自动连接 · '+phase:rs.auto_connect===false?'自动连接已暂停':'等待自动重连 · '+fmt(rs.next_retry_in_s,0)+'秒';
  text('rtt',fmt(rs.roundtrip_ms));tone('serverStatus',computeMessage,computeReady?'good':'warn');text('latencyNote','计算连接往返；模型推理时效单独检查');
- text('pipeSource',src.connected?'g.Nautilus · 独立采集端':'等待 g.Nautilus 自动恢复');text('pipeProcessing','保留原厂配置 · 接触质量未知');text('pipeGpu',computeMessage);stateIcon('stageSource',src.fresh?'good':'warn');stateIcon('stageProcessing','warn');stateIcon('stageGpu',computeReady?'good':'warn');
+ text('pipeSource',(src.transport_label||'通路待确认')+' · '+(src.connected?'g.Nautilus':'等待自动恢复'));text('pipeProcessing','保留原厂配置 · 接触质量未知');text('pipeGpu',computeMessage);stateIcon('stageSource',src.fresh?'good':'warn');stateIcon('stageProcessing','warn');stateIcon('stageGpu',computeReady?'good':'warn');
  text('waveAge','数据年龄 '+fmt(src.age_ms,0)+' ms');text('sampleCount',(src.samples_total??0).toLocaleString()+' samples');text('waveSubtitle',(view.count?view.count+' 路 EEG':'EEG通道未知')+' · '+(s.waveforms?.seconds||3)+' 秒视窗 · 位置'+(s.processing?.montage_verified?'已登记':'待核验'));
 
  rawMode=true;notchMode=false;['filteredButton','notchButton'].forEach(id=>{$(id).disabled=true;$(id).classList.remove('selected');$(id).title='中枢保留原厂信号，未实现此二次滤波'});$('rawButton').classList.add('selected');text('waveMode','原始值 · 保留原厂配置 · 未二次滤波');
@@ -59,7 +59,7 @@ function updateGnautilus(s){
  text('guidedStatus',s.acquisition?.active?'主动采集 · '+(s.acquisition.phase||'进行中')+' · 已保存事件 '+(s.acquisition.events_saved??'—'):'电脑与 VR 可主动开始采集；松开和未标注段不补成静止');
  const events=JSON.stringify(s.events||[]);if(events!==lastEvents){lastEvents=events;$('eventList').replaceChildren();for(const e of s.events||[]){const row=document.createElement('div');row.className='event '+(e.level||'info');const tm=document.createElement('time'),message=document.createElement('p');tm.textContent=String(e.time||'').slice(11,19);message.textContent=e.message;row.append(tm,message);$('eventList').append(row)}}
  text('uptime',Number.isFinite(s.uptime_s)?'已运行 '+Math.floor(s.uptime_s/60)+' 分钟':'g.Nautilus · 新模型未配置');
- text('settingsSource',src.endpoint||'等待采集端');text('settingsSignal',(view.count?view.count+' 路 EEG':'通道未知')+' / '+(view.configuredRate?fmt(view.configuredRate,0)+' Hz 配置':'采样率未知'));text('settingsLayout',s.processing?.montage_verified?'布局已登记，现场佩戴仍待核验':'佩戴与布局待核验');
+ text('sourceNetworkPath',(src.transport_label||'通路待确认')+(src.connected?'':' · 未连接'));text('settingsSource',src.endpoint||'等待采集端');text('settingsSignal',(view.count?view.count+' 路 EEG':'通道未知')+' / '+(view.configuredRate?fmt(view.configuredRate,0)+' Hz 配置':'采样率未知'));text('settingsLayout',s.processing?.montage_verified?'布局已登记，现场佩戴仍待核验':'佩戴与布局待核验');
  document.querySelectorAll('[data-mode]').forEach(b=>{b.disabled=b.dataset.mode==='replay';b.textContent=b.dataset.mode==='live'?'接收采集端':b.dataset.mode==='paused'?'暂停本端接收':'旧回放已归档'});$('replaySessionButton').disabled=true;$('sessionSelect').disabled=true;text('sessionEmpty','旧设备回放已归档；新设备记录按日期保存在 data/gnautilus。');renderRelay();drawWave();
 }
 function renderComputeFeedback(){
@@ -77,7 +77,7 @@ async function pollInferenceFeedback(){
 function renderRelay(){
  if(!newDevice())return;const relay=performance.now()-relayAt<5000?relaySnapshot:null,onboarding=relay?.onboarding,roles=relay?.role_states;
  text('settingsRelay',relay?.endpoint||relay?.url||relay?.public_url||'等待公网地址');text('relayOnboarding',onboarding?.message||'等待自动注册状态');
- for(const [role,id]of [['eeg','relayEeg'],['quest','relayQuest']]){const state=roles?.[role];text(id,state?.online===true?'已认证在线 · 自动归属':state?.online===false?'等待此类设备连接':'设备归属未知')}
+ for(const [role,id]of [['eeg','relayEeg'],['quest','relayQuest']]){const state=roles?.[role],peer=EEGUI.receiverState(vrSnapshot?.vr?.clients,performance.now()-vrReceivedAt),route=role==='eeg'?(status?.source?.connected?status.source.transport_label:null):(peer.fresh?peer.peer?.transport_label:null);text(id,route?route+' · 已连接':state?.online===true?'公网身份在线 · 自动归属':state?.online===false?'等待此类设备连接':'设备归属未知')}
  let details=$('acquisitionClientDetails');
  if(!details){details=document.createElement('div');details.id='acquisitionClientDetails';details.className='server-details';details.setAttribute('aria-label','采集端详细状态');$('settingsDialog').insertBefore(details,$('settingsDialog').querySelector('.field'))}
  const client=relay?.acquisition_clients?.[0],c=client?.reported||{},known=client?.status_fresh===true,age=client?EEGUI.ageText(client.age_ms):'尚未收到',channels=c.channels||[],count=channels.filter(x=>x.kind==='EEG').length,extra=channels.filter(x=>x.kind!=='EEG');

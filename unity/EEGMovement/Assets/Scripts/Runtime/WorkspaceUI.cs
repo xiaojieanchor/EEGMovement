@@ -168,7 +168,7 @@ namespace EEGMovement.Unity
             testButton.interactable = !emergency; testLabel.text = controller.Workspace.AllowTests ? "撤销 TEST 允许并停止" : "允许 TEST 合成指令";
             resetButton.interactable = emergency; resetLabel.text = emergency ? "手动复位" : "无急停锁止";
             details.text = s == null ? "接收器未连接\n\n" + (controller.Issue ?? "请打开本机中枢并重新连接。") :
-                "接收器  Unity · " + (s.paired ? "已配对" : "等待配对") + "\n指令状态  " + Reason(s.reason) + "\n回执新鲜度  " + (fresh ? Math.Max(0, s.command_age_ms).ToString("F0") + " ms" : "已过期 / 无指令") +
+                "接收器  Unity · " + controller.ConnectionPath + "\n连接  " + (s.paired ? "已配对" : "等待配对") + " · " + Reason(s.reason) + "\n回执新鲜度  " + (fresh ? Math.Max(0, s.command_age_ms).ToString("F0") + " ms" : "已过期 / 无指令") +
                 "\n实际位置  " + s.x.ToString("F2") + " / " + s.z.ToString("F2") + " m\n已应用序号  " + s.applied_seq +
                 "\n帧耗时 / P95  " + controller.Health.frame_ms.ToString("F1") + " / " + controller.Health.frame_p95_ms.ToString("F1") + " ms\n拒绝包 / 看门狗  " + s.rejected + " / " + s.watchdog_stops;
             if (acquisition)

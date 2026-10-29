@@ -36,6 +36,24 @@ public static class CoreTests
     }
     public static int Main()
     {
+        Test("LAN preference resists one missed probe and requires recovery proof",()=>{
+            var p=new LanPreference();p.Initial(true);Check(!p.Observe(false)&&p.UsingLan,"one miss changed route");
+            Check(!p.Observe(true)&&p.UsingLan,"healthy route changed");Check(!p.Observe(false),"one miss changed route");
+            Check(p.Observe(false)&&!p.UsingLan,"failed LAN did not fall back");Check(!p.Observe(true),"one proof immediately replaced fallback");
+            Check(p.Observe(true)&&p.UsingLan,"recovered LAN was not preferred");
+        });
+        Test("managed transport switch resets tickets and preserves emergency latch",()=>{
+            using(var client=new ReceiverClient("missing-config",0,"unity",false,new DesktopJson())){
+                var old=client.Core.Nonce;client.SetRelay(bytes=>{},new byte[32]);Check(client.Core.Nonce!=old&&client.Core.EmergencyLatched,"relay switch kept tickets");
+                old=client.Core.Nonce;client.SetLan(new PairingConfig{version=1,host="192.168.0.1",transport="lan",port=19771,key=new string('0',64)});
+                Check(client.Core.Nonce!=old&&client.Core.EmergencyLatched&&client.Transport=="内网直连","LAN switch failed");
+                client.AcceptRelay(Encoding.UTF8.GetBytes("late cloud data"));Check(client.Snapshot().invalid_wire==0,"inactive cloud path entered receiver");
+            }
+        });
+        Test("LAN automatic discovery rejects public and virtual DNS addresses",()=>{
+            foreach(var h in new[]{"106.55.251.83","198.18.0.1","127.0.0.1","example.com","::1"})Check(!LanHubTransport.PrivateHost(h),"non-LAN hint accepted");
+            Check(LanHubTransport.PrivateHost("192.168.137.1")&&LanHubTransport.PrivateHost("172.25.56.83"),"private IPv4 rejected");
+        });
         Test("relay heartbeat uses signed receiver ticket and starts latched",()=>{
             var codec=new DesktopJson();byte[] key=new byte[32];byte[] sent=null;
             using(var client=new ReceiverClient(System.IO.Path.Combine(System.IO.Path.GetTempPath(),Guid.NewGuid().ToString("N")+".json"),0,"csharp_harness",false,codec)){

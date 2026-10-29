@@ -52,6 +52,7 @@ namespace EEGMovement.Unity
         public bool LargeText { get; set; }
         public RuntimeHealth Health { get; private set; } = new RuntimeHealth();
         ReceiverClient client;
+        public string ConnectionPath {get{return Application.platform==RuntimePlatform.Android?QuestNetwork.ConnectionPath:client!=null?client.Transport:"等待连接";}}
         // Internal read-only identity for the explicit CLI safety validation; never serialized or logged.
         internal string PairingNonce { get { return client == null ? null : client.Core.Nonce; } }
         double lastYaw;
@@ -98,6 +99,13 @@ namespace EEGMovement.Unity
             PlayerPrefs.SetInt("large_text", LargeText ? 1 : 0); PlayerPrefs.Save();
         }
         public void Reconnect() { Workspace.Reconnected(); Connect(false); if(Application.platform==RuntimePlatform.Android)QuestNetwork.RetryConnection(); }
+        // Changing a network path invalidates motion evidence, not the user's
+        // open collection page/session. Explicit EmergencyStop still aborts it.
+        public void TransportChanged()
+        {
+            Workspace.EmergencyStop();
+            if(client!=null){client.EmergencyStop();State=client.Snapshot();}
+        }
         void Connect(bool allowTest)
         {
             if (client != null) { client.EmergencyStop(); client.Dispose(); client = null; }

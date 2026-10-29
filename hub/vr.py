@@ -124,6 +124,11 @@ class VrLink:
         for identity,wire_key in candidates:
             try:p=decode_packet(raw,wire_key)
             except ValueError:continue
+            # Authenticated reachability probe, without creating a receiver,
+            # replacing its nonce, issuing a ticket or changing an action.
+            if p.get('kind')=='route_probe':
+                if not HEX32.fullmatch(str(p.get('nonce',''))):raise ValueError('Invalid route probe')
+                return encode_packet(dict(version=1,kind='route_probe_reply',nonce=p['nonce'],session=self.session),wire_key)
             if readiness is None:readiness=self.provider() # No VrLink lock is held across Hub.lock.
             response=self.heartbeat(p,address,readiness,identity)
             return encode_packet(response,wire_key) if response else None
@@ -249,7 +254,8 @@ class VrLink:
             clients=[]
             for c in self.clients.values():
                 age=(now-c['last_seen'])*1000
-                clients.append(dict(receiver_id=c['receiver_id'],device_id=c.get('identity','loopback'),observed_endpoint=c['address'][0]+':'+str(c['address'][1]),role=c['role'],allow_test=c['allow_test'],online=age<300,telemetry_age_ms=round(age,1),sent_seq=c['seq'],applied_seq=c['applied_seq'],command=c['command'],telemetry=c['telemetry'],command_to_ack_ms=c['ack_ms']))
+                transport='public_relay' if c['address'][0].startswith('relay:') else 'loopback' if c['address'][0]=='127.0.0.1' else 'lan'
+                clients.append(dict(receiver_id=c['receiver_id'],device_id=c.get('identity','loopback'),observed_endpoint=c['address'][0]+':'+str(c['address'][1]),transport=transport,transport_label={'public_relay':'公网中继','loopback':'内网 · 本机','lan':'内网直连'}[transport],role=c['role'],allow_test=c['allow_test'],online=age<300,telemetry_age_ms=round(age,1),sent_seq=c['seq'],applied_seq=c['applied_seq'],command=c['command'],telemetry=c['telemetry'],command_to_ack_ms=c['ack_ms']))
             online=[c for c in clients if c['online']]
             peer=next((c for c in online if c['role']=='unity'),next((c for c in online if c['role']=='csharp_harness'),None))
             telemetry=peer['telemetry'] if peer else {}

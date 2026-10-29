@@ -48,7 +48,7 @@ async function boot(file,scripts,status,other={}){
  assert.match(progress.document.getElementById('serverError').textContent,/previous timeout/);
  const relay=await boot('index',['ui-state.js','app.js'],s,{'/api/relay/status':{connected:true,endpoint:'wss://fixture.invalid/relay',onboarding:{state:'ready',message:'自动归属已就绪'},role_states:{eeg:{online:false},quest:{online:true}}}});
  assert.equal(relay.document.getElementById('relayEeg').textContent,'等待此类设备连接','a connected Hub does not prove the EEG agent is online');
- assert.equal(relay.document.getElementById('relayQuest').textContent,'已认证在线 · 自动归属');
+ assert.equal(relay.document.getElementById('relayQuest').textContent,'公网身份在线 · 自动归属');
  const unknown=fixture();unknown.gnautilus.descriptor=null;unknown.quality.channels=[];unknown.source.configured_sfreq=null;unknown.source.nominal_sfreq=null;unknown.processing.channel_names=[];
  const u=await boot('index',['ui-state.js','app.js'],unknown);
  assert.equal(u.document.getElementById('goodTotal').textContent,'/ —');
@@ -102,5 +102,13 @@ async function boot(file,scripts,status,other={}){
  }
  stableIntent.fresh=true;stableIntent.latest={};stableIntent.error=null;await stable.timers.find(t=>t.ms===500).fn();
  assert.match(stable.document.getElementById('serverError').textContent,/推理运行中/);assert.equal(stable.writes.length,0);
+ const lan=fixture();lan.source.transport='lan_ws';lan.source.transport_label='内网直连';
+ const routeStatus={vr:{clients:[{role:'unity',online:true,telemetry_age_ms:1,transport:'public_relay',transport_label:'公网中继',telemetry:{state:'STOP',mode:'LIVE',actual_speed:0,actual_yaw_rate:0}}]}};
+ const routed=await boot('index',['ui-state.js','app.js'],lan,{'/api/vr/status':routeStatus});
+ assert.match(routed.document.getElementById('pipeSource').textContent,/内网直连/);assert.match(routed.document.getElementById('sourceNetworkPath').textContent,/内网直连/);
+ assert.match(routed.document.getElementById('motionSource').textContent,/Unity.*公网中继/);
+ routeStatus.vr.clients[0].transport='lan';routeStatus.vr.clients[0].transport_label='内网直连';
+ await vm.runInContext('pollMotion()',routed.context);
+ assert.match(routed.document.getElementById('motionSource').textContent,/Unity.*内网直连/);
  console.log('PASS: g.Nautilus original workbench, dynamic EEG pagination, unknown metadata, model retirement, inference signal view');
 })().catch(e=>{console.error(e);process.exitCode=1});

@@ -47,7 +47,11 @@ class HubRelay:
         if not state['connected']:
             self.state['role_states']={r:dict(online=None) for r in ('eeg','quest')}
             self.state['onboarding']=dict(state='waiting_hub',message='等待中枢公网连接',pending_count=0)
-        self.hub.intent_control.configure({'enabled':False})
+        # A backup cloud reconnect must not interrupt a healthy direct path.
+        vr=getattr(self.hub,'vr',None)
+        clients=vr.snapshot().get('clients',[]) if hasattr(vr,'snapshot') else []
+        direct=any(c.get('online') and c.get('role')=='unity' and c.get('transport') in ('lan','loopback') for c in clients)
+        if not direct:self.hub.intent_control.configure({'enabled':False})
         runtime=self.hub.gnautilus_runtime
         if getattr(runtime,'active_transport',None)!='lan_ws':
             runtime.source_lost('public_relay_reconnected' if state['connected'] else 'public_relay_disconnected')

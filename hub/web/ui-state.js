@@ -30,7 +30,8 @@
    return {peer,age,fresh:peer.online===true&&age<300&&number(t.actual_speed)&&number(t.actual_yaw_rate)&&['STOP','MOVING'].includes(t.state)&&['LIVE','TEST'].includes(t.mode)};
   }).sort((a,b)=>Number(b.fresh)-Number(a.fresh)||Number(b.peer.role==='unity')-Number(a.peer.role==='unity')||a.age-b.age);
   const chosen=candidates[0],peer=chosen?.peer||null,t=peer?.telemetry||{},fresh=!!chosen?.fresh;
-  return {peer,telemetry:t,fresh,age:chosen?.age??null,label:peer?(peer.role==='unity'?'Unity':peer.role==='csharp_harness'?'C# 联调':String(peer.role||'未知接收器')):'暂无接收器',speed:fresh?t.actual_speed:null,yawRate:fresh?t.actual_yaw_rate:null,modeLabel:fresh?(t.mode==='TEST'?'TEST · 合成指令':'LIVE'):'回执未知',motion:!fresh?'执行未知':Math.abs(t.actual_speed)>.005?'正在移动':Math.abs(t.actual_yaw_rate)>.5?'正在转向':'实际静止'};
+  const route=peer?.transport_label||({lan:'内网直连',loopback:'内网 · 本机',public_relay:'公网中继'}[peer?.transport])||'';
+  return {peer,telemetry:t,fresh,age:chosen?.age??null,label:peer?(peer.role==='unity'?'Unity':peer.role==='csharp_harness'?'C# 联调':String(peer.role||'未知接收器'))+(route?' · '+route:''):'暂无接收器',speed:fresh?t.actual_speed:null,yawRate:fresh?t.actual_yaw_rate:null,modeLabel:fresh?(t.mode==='TEST'?'TEST · 合成指令':'LIVE'):'回执未知',motion:!fresh?'执行未知':Math.abs(t.actual_speed)>.005?'正在移动':Math.abs(t.actual_yaw_rate)>.5?'正在转向':'实际静止'};
  }
  function testAvailability(snapshot,elapsed=0,pending=false,blockedGeneration=null){
   const receiver=receiverState(snapshot?.vr?.clients,elapsed);

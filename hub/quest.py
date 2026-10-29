@@ -25,6 +25,14 @@ def signature(secret,method,path,device,boot,seq,body):
 
 def execution_key(secret):return hmac.new(secret,b'EEGMovement UDP v1',hashlib.sha256).digest()
 
+def lan_candidates():
+    """Private interface hints only. The device must authenticate HTTP and UDP."""
+    try:
+        import psutil
+        values=[entry.address for entries in psutil.net_if_addrs().values() for entry in entries if entry.family==socket.AF_INET]
+    except (ImportError,OSError):values=[]
+    return sorted({v for v in values if private_ipv4(v) and not v.startswith('127.')})[:12]
+
 class BoundedServer(ThreadingHTTPServer):
     daemon_threads=True
     def __init__(self,*args,**kwargs):
@@ -115,6 +123,7 @@ class QuestService:
             development_accuracy=accuracy((model_health.get('development') or {}).get('accuracy'))
             return dict(version=1,status_schema=3,control=control,calibration=calibration,
                 source=dict(connected=bool(source.get('connected')),fresh=bool(source.get('fresh')),
+                    transport=source.get('transport'),transport_label=source.get('transport_label'),
                     device=source.get('device'),sample_rate=source.get('sfreq_measured') or source.get('nominal_sfreq'),
                     sample_rate_source='host_observed' if source.get('sfreq_measured') else 'device_configuration',
                     nominal_rate=source.get('nominal_sfreq'),age_ms=source.get('age_ms'),
@@ -139,7 +148,8 @@ class QuestService:
                 training=dict(formal_ready=bool(cached.get('formal_training_ready')),checked_at=cached.get('checked_at'),status='cached_readiness'),
                 acquisition=dict(active=bool((state.get('acquisition') or {}).get('active'))))
         if method=='GET' and path=='/v1/pairing':
-            return dict(version=1,transport='lan',host=None,port=self.hub.vr.port,hub_session=self.hub.vr.session)
+            return dict(version=1,transport='lan',host=None,port=self.hub.vr.port,hub_session=self.hub.vr.session,
+                        lan_hosts=lan_candidates(),lan_http_port=self.port,prefer_lan=True)
         if method=='GET' and path=='/v1/acquisition/sync':return self.hub.acquisition.sync()
         if method=='GET' and path=='/v1/acquisition/status':return self.hub.acquisition.snapshot()
         if getattr(self.hub,'new_device_mode',False) and path.startswith('/v1/calibration/'):

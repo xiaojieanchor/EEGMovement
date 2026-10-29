@@ -32,7 +32,7 @@ def test_32_float32_ingest_registered_model_inference_decision_and_signed_vr_pac
     root=remote/'data'/records[0]['upload_id'];d=read_json(root/'descriptor.json');raw=np.fromfile(root/'raw.f32',dtype='<f4').reshape(-1,32)
     control=IntentControl(False)
     hub=SimpleNamespace(lock=threading.RLock(),record_lock=threading.RLock(),new_device_mode=True,raw=collections.deque(),filtered=collections.deque(),notched=collections.deque(),source_mode='paused',last_packet=None,epoch=0,sample_index=0,recorder=None,recording_name=None,recording_samples=0,quality={},event=lambda *a:None,intent_control=control,acquisition=SimpleNamespace(snapshot=lambda:{'active':False}),stop_event=Mock())
-    manager=SimpleNamespace(cached=service.get('/snapshot'),bridge=SimpleNamespace(call=lambda method,path,data=None,**kw:service.post(path,data)),switching=lambda:False)
+    manager=SimpleNamespace(cached=service.get('/snapshot'),bridge=SimpleNamespace(call=lambda method,path,data=None,**kw:service.post(path,data)),switching=lambda:False,inference_readiness=lambda:dict(can_start=True))
     hub.intent=MLIntent(hub,manager);hub.ml=manager;hub.vr=VrLink(tmp_path,lambda:hub.intent.readiness(),lambda *a:None)
     runtime=GnautilusRuntime(hub,tmp_path,port=0);hub.gnautilus_runtime=runtime
     heartbeat=dict(version=1,kind='heartbeat',receiver_id='a'*32,nonce='b'*32,session='',ticket=1,role='unity',allow_test=False,

@@ -9,7 +9,7 @@ namespace EEGMovement.Unity
     public sealed class QuestStatusOverlay : MonoBehaviour
     {
         [Serializable] public class Channel {public string id,name,kind,unit,color,quality_label;public bool training_eligible;}
-        [Serializable] public class Signal { public bool connected, fresh, quality_valid,contact_quality_known; public float sample_rate, nominal_rate,age_ms; public int good_channels,channel_count,eeg_channel_count; public string device,quality_state;public Channel[] channels; }
+        [Serializable] public class Signal { public bool connected, fresh, quality_valid,contact_quality_known; public float sample_rate, nominal_rate,age_ms; public int good_channels,channel_count,eeg_channel_count; public string device,quality_state,transport_label;public Channel[] channels; }
         [Serializable] public class Model { public string name, status, note,inference_state,candidate_kind,score_semantics; public bool calibrated,has_training_accuracy,has_development_accuracy; public int output_schema; public int parameters; public float compute_ms,active_probability,idle_probability,result_age_ms,training_accuracy,development_accuracy,roundtrip_ms,evidence_ms,hop_ms; public float[] probabilities,direction_probabilities;public int[] usable_channels; public bool result_fresh,inference_enabled; }
         [Serializable] public class Decision {public bool active,model_ready;public string action_label,reason,score_semantics;public float p_active,linear_confidence,turn_confidence;public int linear_axis,turn_axis;}
         [Serializable] public class Control {public bool enabled,fresh,calibrated;public float active_threshold,direction_threshold;public Decision decision;}
@@ -99,7 +99,7 @@ namespace EEGMovement.Unity
             {
                 freshness.text="连接待确认 · 旧数据已失效";model.text="模型：未知";probabilities.text="动 / 不动：—\n前 / 后 / 左 / 右：—";fusion.text="融合输出：未知";signal.text="脑电：未知";compute.text="服务器：未知";execution.text="执行：未知（不沿用旧回执）";training.text="训练准备：待刷新";return;
             }
-            freshness.text="中枢更新 "+age.ToString("F1")+"秒前 · 只读监控";
+            freshness.text=(Controller?Controller.ConnectionPath:QuestNetwork.ConnectionPath)+" · 中枢更新 "+age.ToString("F1")+"秒前";
             string mode=latest.model.name!=null&&latest.model.name.Contains("diagnostic")?"频谱 / CCA诊断":latest.model.name;
             bool scoresFresh=latest.model.inference_enabled&&latest.model.result_fresh&&latest.model.result_age_ms+age*1000<500;
             string inference=latest.model.inference_enabled?InferenceName(latest.model.inference_state):"已停止";
@@ -110,7 +110,7 @@ namespace EEGMovement.Unity
             var c=latest.control;var d=c==null?null:c.decision;
             fusion.text=c==null?"融合状态：未知":!c.enabled?"模型动作关闭":!scoresFresh||!c.fresh||d==null?"融合输出：等待实时输入":"融合输出："+(d.active?ActionName(d.action_label):"停止 / 待确认")+"\n连续动 "+Percent(d.p_active)+" · 前后轴 "+Percent(d.linear_confidence)+" · 转向轴 "+Percent(d.turn_confidence)+"\n门限 动 "+Percent(c.active_threshold)+" / 轴内 "+Percent(c.direction_threshold)+" · 双轴融合映射";
             var src=latest.source;var columns=src.channels??new Channel[0];int count=columns.Length;
-            signal.text=(src.device??"脑电")+"："+(src.fresh?src.sample_rate.ToString("F0")+" Hz · "+src.age_ms.ToString("F0")+" ms":"无新鲜样本");
+            signal.text=(src.device??"脑电")+" · "+(src.transport_label??"通路未知")+"\n"+(src.fresh?src.sample_rate.ToString("F0")+" Hz · "+src.age_ms.ToString("F0")+" ms":"无新鲜样本");
             signal.text+="\nEEG "+src.eeg_channel_count+" 路 / 数据列 "+count+" · 接触质量"+(src.contact_quality_known?"已测量":"未测量");
             int pages=Math.Max(1,(count+7)/8),page=(int)(Time.unscaledTime/4)%pages,begin=page*8,end=Math.Min(count,begin+8);
             if(pages>1)signal.text+="\n通道 "+(begin+1)+"–"+end+" / "+count+"（每4秒换页）";
