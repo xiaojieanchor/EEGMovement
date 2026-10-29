@@ -25,3 +25,5 @@
 .calibration-screen .button:focus-visible {outline:3px solid #257e61;outline-offset:4px}
 .calibration-screen[data-paused=true] .calibration-screen-state {color:#805017}
 @media(max-width:480px),(max-height:650px){.calibration-screen{padding:20px 16px}.calibration-stage{margin-bottom:10px}.calibration-phase-clock{margin-top:12px}.calibration-help{margin:12px 0}.calibration-clocks{margin:12px 0}}
+
+#intentStart[aria-pressed=true],#intentEnable[aria-pressed=true]{background:#166c5e;color:#fff;border-color:#166c5e}#intentEnable:disabled{cursor:not-allowed}

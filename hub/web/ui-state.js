@@ -66,7 +66,18 @@
   async function refresh(){if(busy)return;busy=true;button.disabled=true;button.textContent='检查中…';error.textContent='';const requestedAt=performance.now();try{const r=await fetch('/api/preparation',{cache:'no-store',signal:AbortSignal.timeout(8000)});if(!r.ok)throw Error('HTTP '+r.status);const data=await r.json();if(data.version!==1||!Array.isArray(data.stages))throw Error('接口格式不完整');lastAt=requestedAt;lastData=data;render(data);note.textContent='来源与检测时间随各阶段列出；构建记录不代表当前运行验收。'}catch(e){lastData=null;render(null,true);note.textContent='准备接口暂不可用，实时采集与会话功能仍可使用。';error.textContent='无法读取系统准备状态。请稍后点击“重新检查”。'}finally{busy=false;button.disabled=false;button.textContent='重新检查'}}
   button.onclick=refresh;render(null);refresh();const ageTimer=setInterval(()=>{if(!lastData)return;if(performance.now()-lastAt>maximumAge){lastData=null;render(null,true);note.textContent='准备状态已超过刷新期限，当前条件需要重新检查。';error.textContent='状态已过期。请点击“重新检查”，或等待中枢恢复。'}else render(lastData)},1000);const timer=setInterval(()=>{if(!document.hidden)refresh()},10000);return {refresh,destroy:()=>{clearInterval(timer);clearInterval(ageTimer)}};
  }
- return {receiverState,testAvailability,createRequestGate,preparationStages,ageText,createPreparationView,signalView,drawSignal};
+ function inferenceFeedback(intent,quality){
+  if(!intent)return {code:'unknown',title:'正在同步推理状态',detail:'计算连接与推理状态分别检查。'};
+  if(!intent.inference_enabled)return {code:'stopped',title:'推理未开启',detail:intent.readiness?.can_start===false?intent.readiness.message:'计算服务就绪，可手动启动推理。'};
+  if(intent.fresh&&intent.latest)return {code:'running',title:'推理运行中',detail:intent.control?.enabled?'模型动作已授权，实际执行以接收端回执为准。':'已有新鲜模型结果，模型动作仍需单独启用。'};
+  const error=intent.error||intent.rejection||'',rows=quality?.fresh?quality.channels||[]:[],flat=rows.filter(c=>c.reasons?.includes('flatline')).length;
+  if(/Electrical quality|electrical.*reject/i.test(error)||quality?.fresh&&quality.valid===false&&quality.state!=='warming')return {code:'waiting_quality',title:'推理已开启 · 等待有效脑电',detail:(flat?flat+'路通道变化幅度过低（平线）。':'当前信号未通过电气质量检查。')+'请佩戴并检查电极与参考连接；输入合格后自动继续，当前不输出动作。'};
+  if(intent.inference_state==='delayed')return {code:'delayed',title:'推理保持运行 · 数据延迟',detail:'连续数据仍在处理；等待新鲜结果，过期结果不用于动作。'};
+  if(/montage|contract|reference|configuration|identity/i.test(error))return {code:'input_mismatch',title:'推理已开启 · 等待输入配置匹配',detail:'通道、参考或设备配置与模型合同不一致，请核对输入。'};
+  if(intent.inference_state==='warming')return {code:'warming',title:'推理已开启 · 连续信号预热中',detail:'正在积累模型所需历史窗口，完成后自动继续。'};
+  return {code:'waiting_input',title:'推理已开启 · 等待有效结果',detail:/Fresh verified-origin|disconnected|link/i.test(error)?'等待采集或计算连接恢复；当前模式保持开启。':error||'等待连续输入与模型结果，当前不输出动作。'};
+ }
+ return {receiverState,testAvailability,createRequestGate,preparationStages,ageText,createPreparationView,signalView,drawSignal,inferenceFeedback};
 });
 
 /* EEGMovement research workspace. Presentation logic only; no control POSTs. */

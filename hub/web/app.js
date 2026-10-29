@@ -1,9 +1,9 @@
 'use strict';
 const $=id=>document.getElementById(id);let lastStatusAt=0,status=null,rawMode=false,notchMode=false,offlineCount=0,polling=false,recording=false,lastEvents='',toastTimer;
 const fmt=(n,d=1)=>n===null||n===undefined?'—':Number(n).toFixed(d);
-let wavePage=0,relaySnapshot=null,relayAt=0,relayPolling=false;
+let wavePage=0,relaySnapshot=null,relayAt=0,relayPolling=false,inferenceSnapshot=null,inferenceAt=0,inferencePolling=false;
 const newDevice=()=>!!status?.gnautilus||status?.source?.device==='g.Nautilus'||document.body.dataset.deviceTransition==='gnautilus';
-function text(id,value){$(id).textContent=value}
+function text(id,value){value=String(value??'');if($(id).textContent!==value)$(id).textContent=value}
 function tone(id,value,t){text(id,value);$(id).className='metric-status '+t}
 function toast(s){text('toast',s);$('toast').classList.add('visible');clearTimeout(toastTimer);toastTimer=setTimeout(()=>$('toast').classList.remove('visible'),3500)}
 async function post(path,data={}){const r=await fetch(path,{method:'POST',headers:{'Content-Type':'application/json','X-EEGHub':'1'},body:JSON.stringify(data),signal:AbortSignal.timeout(8000)});const j=await r.json();if(!r.ok)throw Error(j.error||'操作未完成');return j}
@@ -41,7 +41,7 @@ function updateGnautilus(s){
  rawMode=true;notchMode=false;['filteredButton','notchButton'].forEach(id=>{$(id).disabled=true;$(id).classList.remove('selected');$(id).title='中枢保留原厂信号，未实现此二次滤波'});$('rawButton').classList.add('selected');text('waveMode','原始值 · 保留原厂配置 · 未二次滤波');
  const grid=$('channelGrid');grid.replaceChildren();for(const channel of view.visible){const observed=q.channels?.[channel.index],card=document.createElement('div'),title=document.createElement('strong'),label=document.createElement('small'),detail=document.createElement('span');card.className='channel quality-gray';title.textContent=channel.name;label.textContent=observed?.quality_label||'接触质量未测量';detail.className='rms';detail.textContent='单位 '+(channel.unit||'未知')+' · 训练与模型未配置';card.append(title,label,detail);card.title=channel.name+' · '+label.textContent;grid.append(card)}
  text('qualityReason',q.label||'等待实际通道与接触质量信息');text('wavePageStatus',view.count?(view.page+1)+' / '+view.pages+' 页 · EEG '+(view.page*8+1)+'–'+Math.min(view.count,(view.page+1)*8):'通道未知');$('wavePrev').disabled=view.page===0;$('waveNext').disabled=view.page+1>=view.pages;
- $('serverLight').className='status-light '+(computeReady?'good':'');text('sshStatus',rs.ssh_connected?'已连接 / 加密':'等待私有计算连接');text('workerStatus',computeMessage);text('deviceName',rs.last_health?.device||rs.host||'尚未指定');text('returnCount',String(s.performance?.return_count??0));text('connectButton',computeReady?'计算连接信息':rs.connecting?'查看连接进度':'重试计算连接');$('connectButton').disabled=false;text('serverError',rs.last_error||src.error||g.error||'');
+ $('serverLight').className='status-light '+(computeReady?'good':'');text('sshStatus',rs.ssh_connected?'已连接 / 加密':'等待私有计算连接');text('workerStatus',computeMessage);text('deviceName',rs.last_health?.device||rs.host||'尚未指定');text('returnCount',String(s.performance?.return_count??0));text('connectButton',computeReady?'计算连接信息':rs.connecting?'查看连接进度':'重试计算连接');$('connectButton').disabled=false;renderComputeFeedback();
  const health=g.agent_health;$('gpuCards').replaceChildren();const healthNote=document.createElement('div');healthNote.className='empty';healthNote.textContent=health?'采集端 SDK '+(health.sdk_state||'未知')+' · 存储 '+(health.disk_state||'未知')+' · 队列 '+(health.queue_blocks??'—')+(health.error?' · '+health.error:''):'等待独立采集端连接；计算模型未配置';$('gpuCards').append(healthNote);
  ['p50','p95','computeP95','localMs','jitter','parseStats'].forEach(id=>text(id,'—'));
  text('recordText',recording?'停止记录':'记录会话');$('recordButton').classList.toggle('recording',recording);$('recordButton').disabled=!recording&&!src.fresh;$('recordingDot').className='small-dot '+(recording?'recording':'');text('recordingStatus',recording?s.recording.name:'尚未记录');text('recordingSamples',recording?(s.recording.samples??0).toLocaleString()+' samples':'');text('sessionNote','原始通道、配置身份及主动事件保存到本机');
@@ -50,6 +50,18 @@ function updateGnautilus(s){
  text('uptime',Number.isFinite(s.uptime_s)?'已运行 '+Math.floor(s.uptime_s/60)+' 分钟':'g.Nautilus · 新模型未配置');
  text('settingsSource',src.endpoint||'等待采集端');text('settingsSignal',(view.count?view.count+' 路 EEG':'通道未知')+' / '+(view.configuredRate?fmt(view.configuredRate,0)+' Hz 配置':'采样率未知'));text('settingsLayout',s.processing?.montage_verified?'布局已登记，现场佩戴仍待核验':'佩戴与布局待核验');
  document.querySelectorAll('[data-mode]').forEach(b=>{b.disabled=b.dataset.mode==='replay';b.textContent=b.dataset.mode==='live'?'接收采集端':b.dataset.mode==='paused'?'暂停本端接收':'旧回放已归档'});$('replaySessionButton').disabled=true;$('sessionSelect').disabled=true;text('sessionEmpty','旧设备回放已归档；新设备记录按日期保存在 data/gnautilus。');renderRelay();drawWave();
+}
+function renderComputeFeedback(){
+ if(!newDevice())return;const rs=status?.server||{},node=$('serverError');node.setAttribute('role','status');node.setAttribute('aria-live','polite');node.setAttribute('aria-atomic','true');
+ if(rs.ssh_connected&&rs.worker_connected){
+  const fresh=inferenceSnapshot&&performance.now()-inferenceAt<5000,view=EEGUI.inferenceFeedback(inferenceSnapshot);
+  node.className='server-runtime-feedback';node.dataset.state=fresh?view.code:'unknown';
+  text('serverError',fresh?view.title+'。'+view.detail:inferenceSnapshot?'推理状态暂未更新；保留当前模式，等待回传。':'计算服务已连接，正在同步推理状态。');
+ }else{node.className='error-note';node.dataset.state='connection';text('serverError',rs.last_error||status?.source?.error||status?.gnautilus?.error||'等待计算连接恢复，已开启模式保持。')}
+}
+async function pollInferenceFeedback(){
+ if(inferencePolling||!newDevice())return;inferencePolling=true;
+ try{const r=await fetch('/api/intent/status',{cache:'no-store',signal:AbortSignal.timeout(2000)});if(!r.ok)throw Error();inferenceSnapshot=await r.json();inferenceAt=performance.now()}catch{}finally{inferencePolling=false;renderComputeFeedback()}
 }
 function renderRelay(){
  if(!newDevice())return;const relay=performance.now()-relayAt<5000?relaySnapshot:null,onboarding=relay?.onboarding,roles=relay?.role_states;
@@ -98,4 +110,4 @@ $('globalStop').onclick=()=>requests.run('stop',async()=>{text('stopFeedback','�
 document.addEventListener('keydown',e=>{if(e.key==='Escape'&&!$('serverDialog').open&&!$('settingsDialog').open)$('globalStop').onclick()});
 function clearStaleStatus(){if(!lastStatusAt||performance.now()-lastStatusAt<1000)return;$('hubDot').className='small-dot';[...$('channelGrid').children].forEach((el,i)=>{el.className='channel quality-gray';el.querySelector('small').textContent=status?.quality?.disabled_channels_1based?.includes(i+1)?'硬件损坏 · 永久停用':'质量状态过期';el.querySelector('.rms').textContent='排除训练'});['sourceStatus','serverStatus','qualityStatus','packetStatus'].forEach(id=>tone(id,'状态已过期','warn'));['rate','rtt','good','loss'].forEach(id=>text(id,'—'));['stageSource','stageProcessing','stageGpu'].forEach(id=>stateIcon(id,''));text('pipeSource','等待新鲜采集状态');text('pipeGpu','服务器状态未知');text('guidedStatus','VR采集状态未知 · 中枢状态过期，请检查连接；不能据旧页面判断是否仍在录制。');text('sshStatus','状态未知');text('workerStatus','状态未知');text('noticeTitle','中枢状态未更新');text('noticeText','当前采集和服务器状态已过期，请检查连接。');$('serverLight').className='status-light';if(status){status.source.fresh=false;drawWave()}}
 EEGUI.createPreparationView($('preparation'));
-window.addEventListener('resize',drawWave);setInterval(()=>text('clock',new Date().toLocaleTimeString('zh-CN',{hour12:false})),1000);setInterval(poll,200);setInterval(pollMotion,100);setInterval(pollRelay,2000);setInterval(()=>{renderMotion();clearStaleStatus();renderRelay()},100);poll();pollMotion();pollRelay();
+window.addEventListener('resize',drawWave);setInterval(()=>text('clock',new Date().toLocaleTimeString('zh-CN',{hour12:false})),1000);setInterval(poll,200);setInterval(pollMotion,100);setInterval(pollRelay,2000);setInterval(pollInferenceFeedback,500);setInterval(()=>{renderMotion();clearStaleStatus();renderRelay()},100);poll();pollMotion();pollRelay();pollInferenceFeedback();

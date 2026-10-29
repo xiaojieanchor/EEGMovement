@@ -72,10 +72,13 @@
   $('imsMotion').disabled=pending||!i.inference_enabled||!v.output||!v.canStart||s.mode!=='LIVE';text('imsMotion',i.control?.enabled?'关闭模型动作':s.mode==='OFFLINE_REPLAY'?'回放不驱动动作':'启用模型动作');
   if(i.control?.enabled)$('imsMotion').disabled=pending;
   $('imsInference').setAttribute('aria-pressed',String(!!i.inference_enabled));$('imsMotion').setAttribute('aria-pressed',String(!!i.control?.enabled));
+  const inferenceFeedback=EEGUI.inferenceFeedback(i,q),motionReason=!i.inference_enabled?'请先启动推理':!q.valid?inferenceFeedback.detail:!v.output?'等待新鲜且有效的推理结果':!v.vr?'等待目标 VR 的执行回执':!v.canStart?'等待输入与执行条件恢复':'';
+  if(!pending&&!i.control?.enabled&&!v.output)text('imsMotion',i.inference_enabled?'等待有效信号':'先启动推理');
+  $('imsMotion').title=i.control?.enabled?'停止模型动作':motionReason;$('imsMotion').setAttribute('aria-describedby','imsAlert');
   text('imsModelId',model?model.model_id.slice(0,12)+' · '+(model.deployment?.stage==='experimental_live_v1'?'阶段一实验性模型':'已加载模型'):'等待已加载模型');
   text('imsStage',s.mode==='OFFLINE_REPLAY'?'开发回放 · 不驱动真实设备':model?.deployment?.stage==='experimental_live_v1'?'阶段一 · 实验性实时推理':'实时推理');
   root.dataset.source=s.mode||'LIVE';
-  const conditions=blockers.map(x=>x.message);if(!q.valid&&v.source)conditions.push(q.state==='warming'?'软件质量窗口预热中':'软件质检未通过，推理与动作保持门控');
+  const conditions=blockers.map(x=>x.message);if(i.inference_enabled&&!v.output)conditions.push(inferenceFeedback.title+'。'+inferenceFeedback.detail);else if(!q.valid&&v.source)conditions.push(q.state==='warming'?'软件质量窗口预热中':'软件质检未通过，请检查电极与参考连接');
   text('imsAlert',conditions.join('；'));
   text('imsRate',num(s.source?.configured_rate,0)+' Hz');text('imsArrival',num(s.source?.arrival_rate,1)+' 样本/秒');text('imsInputMatch',s.input_match?'身份已匹配':'尚未匹配');
   text('imsPackets',String(s.source?.gap_count??'—')+' / '+readable(s.source?.transport,transportNames,'—'));text('imsAck',num(s.vr?.input_to_execution_ack_p95_ms,0)+' ms（上界）');

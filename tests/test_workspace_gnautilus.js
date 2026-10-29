@@ -78,5 +78,18 @@ async function boot(file,scripts,status,other={}){
  const report=detail.document.getElementById('acquisitionClientDetails').textContent;
  assert.match(report,/FIXTURE-PC.*1\.1\.5/);assert.match(report,/新鲜状态/);assert.match(report,/通道未知/);assert.match(report,/主机实测率未知/);
  assert.equal(detail.writes.length,0);
+ const stableStatus=fixture();stableStatus.server={ssh_connected:true,worker_connected:true,last_error:'Electrical quality rejected; hybrid state reset'};
+ const stableIntent={inference_enabled:true,fresh:false,error:'Electrical quality rejected; hybrid state reset',control:{enabled:false}};
+ const stable=await boot('index',['ui-state.js','app.js'],stableStatus,{'/api/intent/status':stableIntent});
+ const message=stable.document.getElementById('serverError').textContent;
+ assert.match(message,/推理已开启.*等待有效脑电/);assert.doesNotMatch(message,/Electrical quality/);
+ assert.equal(stable.document.getElementById('serverError').className,'server-runtime-feedback');
+ for(let n=0;n<8;n++){
+  stableStatus.server.last_error=n%2?'Electrical quality rejected; hybrid state reset':null;
+  await stable.timers.find(t=>t.ms===200).fn();
+  assert.equal(stable.document.getElementById('serverError').textContent,message,'health polls cannot flash away the persistent inference explanation');
+ }
+ stableIntent.fresh=true;stableIntent.latest={};stableIntent.error=null;await stable.timers.find(t=>t.ms===500).fn();
+ assert.match(stable.document.getElementById('serverError').textContent,/推理运行中/);assert.equal(stable.writes.length,0);
  console.log('PASS: g.Nautilus original workbench, dynamic EEG pagination, unknown metadata, model retirement, inference signal view');
 })().catch(e=>{console.error(e);process.exitCode=1});

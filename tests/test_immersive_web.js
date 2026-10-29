@@ -93,3 +93,13 @@ test('common network failures use Chinese feedback while keeping STOP available'
  assert.doesNotMatch(b.$('imsActionFeedback').textContent,/Failed to fetch/);
  assert.equal(b.$('imsStop').disabled,false);
 });
+
+test('quality wait has persistent explanation and a disabled action button without implicit writes',async()=>{
+ const b=await boot();b.s.mode='LIVE';b.s.intent={inference_enabled:true,fresh:false,error:'Electrical quality rejected; hybrid state reset',control:{enabled:false}};
+ b.s.quality={...b.s.quality,valid:false,state:'invalid',good_channels:0,bad_channels:32,channels:descriptor.channels.map(c=>({...c,valid:false,reasons:['flatline']}))};b.s.can_start=false;
+ await b.tick();await b.click('imsEnter');
+ assert.match(b.$('imsAlert').textContent,/推理已开启.*等待有效脑电/);assert.match(b.$('imsAlert').textContent,/32路通道变化幅度过低/);
+ assert.equal(b.$('imsMotion').disabled,true);assert.equal(b.$('imsMotion').textContent,'等待有效信号');
+ const text=b.$('imsAlert').textContent;await b.tick();await b.tick();assert.equal(b.$('imsAlert').textContent,text);assert.equal(b.writes.length,0);
+ b.s.intent.control.enabled=true;await b.tick();assert.equal(b.$('imsMotion').getAttribute('aria-pressed'),'true');assert.equal(b.$('imsMotion').disabled,false);
+});

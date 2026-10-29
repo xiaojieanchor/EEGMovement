@@ -82,3 +82,5 @@ body.immersive-active{height:100dvh;min-height:0;overflow:hidden!important}body.
 .ims[data-theme=light] .ims-video-validity{background:#fffaedf0}
 @media(max-height:800px){.ims .ims-alert{height:31px;min-height:31px;font-size:10px;padding:5px 8px}.ims .ims-panel .ims-head{min-height:45px}.ims .ims-quality-summary{min-height:25px}.ims .ims-qdetail{min-height:15px}.ims .ims-ledger,.ims .ims-eye-memory{min-height:15px}.ims .ims-state{min-height:17px}.ims .ims-validity{height:16px;line-height:16px;font-size:9px}.ims .ims-chart{height:38px}}
 @media(max-width:700px){.ims #imsTheme{display:inline-block}.ims[data-theme=light] .ims-topbar{background:var(--ims-bg)}.ims .ims-brand strong{font-size:11px}.ims .ims-top-actions{gap:2px}}
+
+.ims-actions button[aria-pressed=true]{background:#24564d;color:#b7f6e0;border-color:#509a87}.ims[data-theme=light] .ims-actions button[aria-pressed=true]{background:#166c5e;color:#fff;border-color:#166c5e}

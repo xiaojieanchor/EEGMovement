@@ -111,3 +111,5 @@ body.studio{background:#f2f5f9;color:#1a2b42;font-family:"Segoe UI","Microsoft Y
 .studio .architecture-node.is-selected .node-top>small{color:#a6bed8}.studio .lab-channel small,.studio .lab-channel span{color:#52695f}.studio .verification-chip.fail{background:#fff0e8;border-color:#e3c0ad;color:#8b4b2d}.studio .training-chart text{fill:#52677f}
 
 .studio progress{appearance:none;width:100%;height:8px;border:0;border-radius:8px;overflow:hidden}.studio progress::-webkit-progress-bar{background:#e2e9f3}.studio progress::-webkit-progress-value{background:#3678eb;border-radius:8px}.studio progress::-moz-progress-bar{background:#3678eb;border-radius:8px}.studio .training-detail progress{height:10px}
+
+.server-runtime-feedback{min-height:5.5em;margin:12px 0 0;padding:10px 12px;border-left:3px solid #8bafa9;border-radius:4px;color:#47656b;background:#f4f8f8;font-size:12px;line-height:1.65;animation:none;transition:none;overflow-wrap:anywhere}.server-runtime-feedback[data-state=waiting_quality]{border-left-color:#b69b66;color:#745c32;background:#faf8f2}
