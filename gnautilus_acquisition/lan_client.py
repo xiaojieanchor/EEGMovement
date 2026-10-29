@@ -9,6 +9,7 @@ import socket
 import threading
 import time
 import urllib.request
+from .timing import LAN_DELIVERY_GRACE_S
 from websockets.sync.client import connect
 from eeg_relay.protocol import encoded, pack, unpack
 from .client import Replicator, source_age_ms
@@ -354,7 +355,7 @@ class LanWsReplicator(Replicator):
                         hdr = self.journal.records[seq]['header']
                         if seq in self.pending or seq in self.acked:
                             continue
-                        if source_age_ms(hdr, self.journal.descriptor['sampling_rate'], now_ns) < 180:
+                        if source_age_ms(hdr, self.journal.descriptor['sampling_rate'], now_ns) < LAN_DELIVERY_GRACE_S*1000:
                             header, body = self.journal.read(seq)
                             self.pending[seq] = time.monotonic()
                             self.last_live_seq = seq
@@ -372,7 +373,7 @@ class LanWsReplicator(Replicator):
                     hdr = self.journal.records[seq]['header']
                     if seq in self.pending or seq in self.acked:
                         continue
-                    if not self.backfill_only and source_age_ms(hdr, self.journal.descriptor['sampling_rate'], now_ns) < 180:
+                    if not self.backfill_only and source_age_ms(hdr, self.journal.descriptor['sampling_rate'], now_ns) < LAN_DELIVERY_GRACE_S*1000:
                         continue
                     header, body = self.journal.read(seq)
                     self.pending[seq] = time.monotonic()

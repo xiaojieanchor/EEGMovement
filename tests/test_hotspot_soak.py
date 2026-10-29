@@ -70,11 +70,11 @@ def test_32_eeg_aux_real_time_cadence_history_reconnect_and_capture(tmp_path):
         assert steady_gaps==0, runtime.last_gap
         assert len(hub.raw)==1250
         assert hub.acquisition.snapshot()['active']
-        # A real transport gap: stop sending >250ms, then resume through a new
+        # A sustained delivery outage (>3s), then resume through a new
         # connection. Requested capture must persist and motion stay disabled.
         if rep.socket is not None:
             rep.socket.shutdown(socket.SHUT_RDWR)
-        time.sleep(.4)
+        time.sleep(3.2)
         assert hub.acquisition.snapshot()['active']
         assert hub.acquisition.snapshot()['input_paused']
         for i in range(100):

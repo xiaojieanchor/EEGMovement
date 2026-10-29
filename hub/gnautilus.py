@@ -14,6 +14,7 @@ import time
 from pathlib import Path
 from gnautilus_acquisition.contract import json_bytes,validate_descriptor,validate_block,send_frame,recv_frame,HEX32
 from gnautilus_acquisition.storage import StreamJournal,atomic_json
+from gnautilus_acquisition.timing import LAN_DELIVERY_GRACE_S
 
 
 def auth_mac(secret,challenge,agent,boot):
@@ -183,7 +184,10 @@ class IngestService:
             if json_bytes(j.descriptor)!=json_bytes(d):raise ValueError('Stream descriptor changed')
             if self.selected_agent is None:self.selected_agent=agent
         result=j.append(h,body);now=time.monotonic()
-        live=source_mark is not None and 0<=now-source_mark<self.freshness_ms/1000 and h['mode']=='live'
+        # LAN delivery may be late but still ordered. Only action eligibility
+        # uses 250ms; explicit historical replay never enters this path.
+        delivery_limit=LAN_DELIVERY_GRACE_S if transport=='lan_ws' else self.freshness_ms/1000
+        live=source_mark is not None and 0<=now-source_mark<delivery_limit and h['mode']=='live'
         with self.lock:
             cursor=self.live_cursors.get(identity,(-1,-1))
             # A durable backfill may race the data lane. Disk deduplication must

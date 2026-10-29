@@ -78,7 +78,9 @@ def test_32_float32_ingest_registered_model_inference_decision_and_signed_vr_pac
             if path=='/inference/predict':time.sleep(.08)
             return out
         manager.bridge.call=late;hub.stop_event.wait.side_effect=[False,True];hub.intent.loop()
-        assert hub.intent.latest is None and 'late_return' in hub.intent.error
+        assert hub.intent.latest is not None and hub.intent.state=='delayed'
+        assert not hub.intent.snapshot()['fresh'] and hub.intent.error is None
+        assert hub.intent.inference_enabled and hub.intent.remote_generation is not None
         heartbeat['ticket']+=1;assert not packet()['active']
         runtime.source_lost('transport_error');assert hub.intent.inference_enabled and hub.intent.latest is None and not control.enabled
         heartbeat['ticket']+=1;assert not packet()['active']

@@ -7,7 +7,8 @@ URL='http://127.0.0.1:8765'
 
 def running():
     try:
-        with urllib.request.urlopen(URL+'/api/status',timeout=2) as r:
+        opener=urllib.request.build_opener(urllib.request.ProxyHandler({}))
+        with opener.open(URL+'/api/status',timeout=2) as r:
             return json.load(r).get('project')=='EEGMovement'
     except Exception:return False
 

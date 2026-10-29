@@ -3,6 +3,7 @@ import datetime
 import collections
 import json
 import math
+import os
 import secrets
 import socket
 import threading
@@ -132,6 +133,7 @@ class LanHubServer:
         if request.path in ('/eeg/v1/lan/info', '/eeg/health'):
             body = json.dumps(dict(
                 service='eegmovement_hub_v1',
+                hub_pid=os.getpid(),
                 schema='gnautilus.lan_ws.v1',
                 status='ok',
                 port=self.port,

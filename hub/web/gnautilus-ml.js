@@ -236,7 +236,7 @@
   }
   async function poll(){if(polling)return;polling=true;try{
    const s=await request('/api/training/jobs');jobs=Array.isArray(s.jobs)?s.jobs:[];fresh=s.fresh===true&&!s.error;serverConnected=!!s.server?.worker_connected;if(fresh&&serverConnected)lastFresh=Date.now();
-   set('gmServer',live()?'计算连接正常 · 回执已同步':s.server?.connecting?'计算服务器连接中…':s.error||s.server?.last_error||'计算连接未就绪');
+   set('gmServer',live()?'计算连接正常 · 回执已同步':s.server?.connecting?'自动连接：'+(s.server.connect_stage||'准备中')+' · 第'+(s.server.connect_attempts||1)+'次':(s.error||s.server?.last_error||'计算连接未就绪')+(s.server?.auto_connect===false?' · 自动连接已暂停':' · 将自动重试'));
    const stamp=s.updated_at?date(s.updated_at):'本次读取';set('gmState',(live()?'服务器回执已同步 · ':'显示最后回执，操作暂不可用 · ')+stamp);if($('trainingSync'))set('trainingSync',live()?'回执已同步':'连接待恢复');
    if(!jobId&&jobs.length){const candidate=jobs.find(j=>activeStates.includes(j.state))||jobs.find(j=>j.state!=='cancelled')||jobs[0];jobId=candidate.id;selection++;}
    if(!live()&&!events.length)set('gmLogs','计算连接未就绪，恢复连接后再读取所选任务事件。');renderOverview();renderJobs();if(jobId&&live()&&(pane==='jobs'||!events.length))await jobLogs();if(live()&&!dataLoaded)await loadDatasets();

@@ -29,9 +29,14 @@ class MLManager:
             self.refresh()
             if not self.error:self.retry_delay=2;self.restore_selected(now);return
             if self.bridge.auto_connect_suspended:return
-        if now<self.retry_at or not self.bridge.password:return
+        if now<self.retry_at:return
+        if not self.bridge.password:
+            from gnautilus_ml.credentials import load_credential
+            self.bridge.password=load_credential(self.bridge.profile)
+            if not self.bridge.password:
+                self.bridge.status.update(connection_state='credential_required');return
         self.hub.intent.invalidate('private_compute_link_reconnect',preserve_mode=True)
-        ok=self.bridge.connect(expected_epoch=epoch);self.retry_at=(time.monotonic() if realtime else now)+self.retry_delay;self.retry_delay=min(30,self.retry_delay*2)
+        ok=self.bridge.connect(expected_epoch=epoch);self.retry_at=(time.monotonic() if realtime else now)+self.retry_delay;self.bridge.status['next_retry_monotonic']=self.retry_at;self.retry_delay=min(15,self.retry_delay*2)
         if ok:self.refresh();self.restore_selected(now)
     def restore_selected(self,now=None):
         now=time.monotonic() if now is None else now
@@ -218,7 +223,7 @@ class MLIntent:
             if not self.inference_enabled:continue
             generation=self.generation;started=time.monotonic()
             try:
-                payload=self.hub.gnautilus_runtime.model_input();meta=next((m for m in self.manager.cached.get('models',[]) if m['model_id']==self.model_id),None)
+                payload=self.hub.gnautilus_runtime.model_input(require_fresh=False);meta=next((m for m in self.manager.cached.get('models',[]) if m['model_id']==self.model_id),None)
                 if meta is None:raise ValueError('Model metadata is not synchronized')
                 end=payload['sample_index_end']
                 if end==self.last_sample:continue
@@ -250,7 +255,7 @@ class MLIntent:
                     with self.lock:self.last_sample=end
                     continue
                 if stream and origin is not None:origin-=(end-result.get('prediction_sample_index_end',end))/d['sampling_rate']
-                if origin is None or not 0<=time.monotonic()-origin<.25:raise ValueError('late_return: 输入已超过250ms')
+                if origin is None or time.monotonic()-origin<0:raise ValueError('Invalid input time')
                 if stream and result.get('warming'):
                     with self.lock:
                         if generation!=self.generation or not self.inference_enabled:continue
@@ -261,11 +266,11 @@ class MLIntent:
                     input_advance_ms=(end-self.last_sample)/d['sampling_rate']*1000 if self.last_sample is not None else None)
                 with self.lock:
                     if generation!=self.generation or not self.inference_enabled:continue
-                    self.latest=result;self.last_return=time.monotonic();self.last_sample=end;self.state='running';self.error=None;self.rejection=None
+                    self.latest=result;self.last_return=time.monotonic();self.last_sample=end;self.state='running' if time.monotonic()-origin<.25 else 'delayed';self.error=None;self.rejection=None
             except Exception as error:
                 with self.lock:self.latest=None;self.state='waiting_input';self.error=str(error);self.rejection=str(error)
                 self.hub.intent_control.update(None)
-                if isinstance(error,(ConnectionError,OSError)) or any(v in str(error) for v in ['lease expired','generation/model','gap_or_reorder','identity_changed','state reset','device-invalid','late_return']):self.invalidate(str(error),preserve_mode=True)
+                if isinstance(error,(ConnectionError,OSError)) or any(v in str(error) for v in ['lease expired','generation/model','gap_or_reorder','identity_changed','state reset','device-invalid']):self.invalidate(str(error),preserve_mode=True)
     def readiness(self):
         snap=self.snapshot();prediction=snap['latest'];collecting=bool(self.hub.recorder or self.hub.acquisition.snapshot().get('active') or self.manager.switching())
         decision=self.hub.intent_control.update(prediction if snap['fresh'] else None,collecting)

@@ -41,6 +41,32 @@ def physical_interface(profile):
     if len(rows)>1:raise ConnectionError('Multiple physical interfaces: select bind_address/interface_index in compute profile')
     return rows[0]['IPAddress'],rows[0]['InterfaceIndex']
 
+
+def open_compute_socket(profile,progress=lambda *a:None):
+    """Try the configured physical path, then OS routing (including campus VPN).
+
+    No HTTP proxy and no change to the machine's routing table. The subsequent
+    SSH handshake still validates the same pinned host key for either path.
+    """
+    errors=[];paths=[]
+    try:
+        address,index=physical_interface(profile)
+        if address:paths.append(('physical',address,index))
+    except (OSError,ValueError,subprocess.SubprocessError) as error:
+        errors.append('physical: '+str(error))
+    paths.append(('system',None,None))
+    for name,address,index in paths:
+        sock=socket.socket();sock.settimeout(4);sock.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
+        progress('tcp_'+name,dict(network_path=name,bind_address=address,network_errors=list(errors)))
+        try:
+            if address:sock.bind((address,0))
+            if sys.platform=='win32' and index:sock.setsockopt(socket.IPPROTO_IP,31,struct.pack('!I',int(index)))
+            sock.connect((profile['host'],profile['port']))
+            return sock,address
+        except OSError as error:
+            sock.close();errors.append(name+': '+str(error))
+    raise ConnectionError('A100 TCP不可达；'+ '; '.join(errors)+'；请检查校园网/VPN及主机固定路由')
+
 class HostKey(paramiko.MissingHostKeyPolicy):
     def __init__(self,expected):self.expected=expected
     def missing_host_key(self,client,hostname,key):
@@ -67,24 +93,25 @@ class ComputeBridge:
         if not cfg.exists() and (self.root/'configs/gnautilus_compute.example.json').exists():cfg=self.root/'configs/gnautilus_compute.example.json'
         self.profile=read_json(cfg);self.event=event;self.client=None;self.password=load_credential(self.profile);self.token=None;self.lock=threading.RLock();self.auto_connect_suspended=False;self.connection_epoch=0
         self.status=dict(ssh_connected=False,worker_connected=False,connecting=False,host=self.profile['host'],ssh_port=self.profile['port'],last_error=None,last_health=None,last_health_time=None,runtime=None,roundtrip_ms=None)
-        self.status.update(credential_saved=bool(self.password),auto_connect=True,connection_state='waiting_retry' if self.password else 'credential_required')
+        self.status.update(credential_saved=bool(self.password),auto_connect=True,connection_state='waiting_retry' if self.password else 'credential_required',connect_attempts=0,connect_stage='idle',connect_started=None,next_retry_in_s=0)
     def connect(self,password=None,*,expected_epoch=None):
         with self.lock:
             if expected_epoch is not None and (expected_epoch!=self.connection_epoch or self.auto_connect_suspended):return False
             if self.status['connecting']:return False
             self.status['connecting']=True
             self.connection_epoch+=1;epoch=self.connection_epoch
-            self.auto_connect_suspended=False;self.status.update(connection_state='connecting',last_error=None)
+            self.auto_connect_suspended=False;self.status.update(connection_state='connecting',connect_stage='network_inspection',connect_started=time.monotonic(),connect_attempts=self.status['connect_attempts']+1)
         password=password or self.password or load_credential(self.profile)
         c=None;s=None
         try:
             self.disconnect(quiet=True);self.password=password
             if not password:raise ValueError('SSH credential required; configure the local Windows credential vault')
-            p=self.profile;s=socket.socket();s.settimeout(12);s.setsockopt(socket.IPPROTO_TCP,socket.TCP_NODELAY,1)
-            address,index=physical_interface(p)
-            if address:s.bind((address,0))
-            if sys.platform=='win32' and index:s.setsockopt(socket.IPPROTO_IP,31,struct.pack('!I',int(index)))
-            s.connect((p['host'],p['port']));c=paramiko.SSHClient();c.set_missing_host_key_policy(HostKey(p['hostkey_sha256']))
+            def progress(stage,extra=None):
+                with self.lock:
+                    if epoch!=self.connection_epoch:raise ConnectionAbortedError('Connection superseded by operator disconnect')
+                    self.status.update(connect_stage=stage,**(extra or {}))
+            p=self.profile;s,address=open_compute_socket(p,progress);progress('ssh_authentication')
+            c=paramiko.SSHClient();c.set_missing_host_key_policy(HostKey(p['hostkey_sha256']))
             c.connect(p['host'],port=p['port'],username=p['username'],password=password,sock=s,look_for_keys=False,allow_agent=False,timeout=12,banner_timeout=12,auth_timeout=12)
             c.get_transport().set_keepalive(10)
             with self.lock:
@@ -92,15 +119,15 @@ class ComputeBridge:
                 self.client=c;self.status.update(ssh_connected=True,bind_address=address,last_error=None)
             try:save_credential(p,password);self.status['credential_saved']=True
             except Exception:self.status['credential_saved']=False
-            token=read_service_token(c,p['root']+'/service.token')
+            progress('service_token');token=read_service_token(c,p['root']+'/service.token')
             with self.lock:
                 if epoch!=self.connection_epoch:raise ConnectionAbortedError('Connection superseded by operator disconnect')
                 self.token=token
-            health=self.call('GET','/health');self.status.update(worker_connected=True,last_health=health,last_health_time=time.monotonic(),runtime=health.get('python'))
+            progress('service_health');health=self.call('GET','/health');self.status.update(worker_connected=True,last_health=health,last_health_time=time.monotonic(),runtime=health.get('python'))
             if health.get('gpu_uuid')!=p.get('gpu_uuid') or health.get('service')!='private_gnautilus_ml':raise ValueError('Private compute service identity or GPU UUID mismatch')
             with self.lock:
                 if epoch!=self.connection_epoch:raise ConnectionAbortedError('Connection superseded by operator disconnect')
-                self.status.update(connection_state='ready',auto_connect=True)
+                self.status.update(connection_state='ready',auto_connect=True,connect_stage='ready',next_retry_in_s=0)
             self.event('新计算服务器已连接，主机身份与模型服务已核验','good')
             return True
         except Exception as error:
@@ -115,7 +142,8 @@ class ComputeBridge:
             self.status.update(ssh_connected=False,worker_connected=False,last_error=str(error),connection_state='authentication_failed' if invalid else 'waiting_retry',auto_connect=not self.auto_connect_suspended)
             self.event('新计算服务器连接失败：'+str(error),'error')
             return False
-        finally:self.status['connecting']=False
+        finally:
+            if epoch==self.connection_epoch:self.status['connecting']=False
     def command(self,code,timeout=30):
         if not self.client:raise ConnectionError('Connect the private compute server first')
         _,out,err=self.client.exec_command("python3 - <<'EEGML_ADMIN'\n"+code+"\nEEGML_ADMIN",timeout=timeout);body=out.read().decode();errors=err.read().decode()
@@ -157,6 +185,9 @@ class ComputeBridge:
     def snapshot(self):
         value=dict(self.status);last=value.get('last_health_time')
         value['health_age_ms']=(time.monotonic()-last)*1000 if last is not None else None
+        value['connect_elapsed_s']=round(time.monotonic()-value['connect_started'],1) if value.get('connecting') and value.get('connect_started') else None
+        retry=value.pop('next_retry_monotonic',None)
+        if retry is not None:value['next_retry_in_s']=round(max(0,retry-time.monotonic()),1)
         return value
     def disconnect(self,quiet=False):
         with self.lock:
@@ -164,7 +195,7 @@ class ComputeBridge:
             if self.client:self.client.close()
             self.client=None;self.token=None;self.status.update(ssh_connected=False,worker_connected=False)
             if not quiet:
-                self.password=None;self.auto_connect_suspended=True;self.status.update(auto_connect=False,connection_state='disconnected_by_operator')
+                self.password=None;self.auto_connect_suspended=True;self.status.update(auto_connect=False,connecting=False,connection_state='disconnected_by_operator',connect_stage='idle')
     def upload_record(self,path):
         from .data import read_native
         p=Path(path);record=read_native(p);key=record['source_sha256'];remote=self.profile['root']+'/data/'+key

@@ -84,7 +84,7 @@ def test_pending_window_is_bounded_and_history_never_becomes_live(tmp_path):
     for seq in range(1, 13):
         h, raw = block_frame(journal.descriptor, seq, (seq - 1) * 8, np.ones((8, 32), np.float32))
         if seq == 1:
-            h['read_monotonic_ns'] -= 2_000_000_000
+            h['read_monotonic_ns'] -= 20_000_000_000
         journal.append(h, raw)
     rep = LanWsReplicator(journal, dict(agent_id='c' * 32))
     rep.ticket = 't'

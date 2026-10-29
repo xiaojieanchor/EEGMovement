@@ -10,6 +10,7 @@ from gnautilus_acquisition.contract import validate_descriptor
 from gnautilus_acquisition.storage import StreamJournal
 from .gnautilus import IngestService
 from .lan_ws import LanHubServer,DEFAULT_LAN_WS_PORT
+from gnautilus_acquisition.timing import ACTION_FRESHNESS_S,LAN_DELIVERY_GRACE_S
 
 
 class SessionRecorder:
@@ -44,7 +45,7 @@ class GnautilusRuntime:
         self.service=IngestService(root,self.accept,on_descriptor=self.describe,on_state=self.connection_state,on_capture_event=self.client_capture_event,get_hub_state=self.feedback,port=port)
         self.lan_ws=LanHubServer(self,port=lan_ws_port)
         self.feedback_boot_id=secrets.token_hex(8);self.feedback_logs=collections.deque(maxlen=20);self.feedback_log_seq=0
-        self.paused=False;self.error=None;self.last_source_loss=None;self.stop_event=threading.Event()
+        self.paused=False;self.error=None;self.last_source_loss=None;self.stop_event=threading.Event();self.reset_on_resume=False
     def start(self):
         self.service.start();self.lan_ws.start();self.thread=threading.Thread(target=self._tick,daemon=True,name='g.Nautilus lifecycle');self.thread.start()
     def execution(self):
@@ -75,10 +76,15 @@ class GnautilusRuntime:
         while not self.stop_event.wait(.1):
             try:
                 self.hub.acquisition.expire()
-                if not self.fresh():self.source_lost('eeg_stream_stale')
+                self.check_input_health()
             except (ValueError,OSError) as e:self.error=f'{type(e).__name__}: {e}'
     def fresh(self):
         return bool(not self.paused and self.hub.last_packet is not None and 0<=time.monotonic()-self.hub.last_packet<.25)
+    def check_input_health(self):
+        # A late frame disables action through fresh()/receiver leases, but is
+        # not a sample discontinuity. Do not reset model state or labels here.
+        if self.last_accept_monotonic and time.monotonic()-self.last_accept_monotonic>=LAN_DELIVERY_GRACE_S:
+            self.source_lost('eeg_delivery_interrupted')
     def describe(self,descriptor):
         d=validate_descriptor(descriptor)
         old=self.descriptor
@@ -98,7 +104,8 @@ class GnautilusRuntime:
         if self.paused or header.get('mode')!='live':return
         now=time.monotonic();source_mark=header.get('hub_source_monotonic_ns')
         observed=source_mark/1e9 if type(source_mark) is int else now
-        if not 0<=now-observed<.25:return
+        delivery_limit=LAN_DELIVERY_GRACE_S if header.get('ingest_transport')=='lan_ws' else ACTION_FRESHNESS_S
+        if not 0<=now-observed<delivery_limit:return
         if not self.descriptor or (self.descriptor['stream_id'],self.descriptor['epoch'],self.descriptor['configuration_sha256'])!=(descriptor['stream_id'],descriptor['epoch'],descriptor['configuration_sha256']):self.describe(descriptor)
         h=self.hub;d=self.descriptor
         counter_columns=[i for i,c in enumerate(d['channels']) if c['kind']=='COUNTER']
@@ -119,6 +126,8 @@ class GnautilusRuntime:
         channels=[dict(name=c['name'],id=c['id'],kind=c['kind'],unit=c['unit'],color='gray',quality_label='接触质量未测量',
                        training_eligible=False,contact_quality_known=False,finite=bool(np.all(np.isfinite(x[:,i])))) for i,c in enumerate(d['channels'])]
         with h.lock:
+            if self.reset_on_resume:
+                h.raw.clear();h.filtered.clear();h.notched.clear();self.reset_on_resume=False
             h.raw.extend(x.tolist());h.filtered.extend(x.tolist()) # Display identity path: no second filter.
             h.sample_index=header['sample_start']+len(x);h.last_packet=observed;h.source_mode='live';h.connected=True;h.source_error=None
             h.quality=dict(valid=False,state='observed' if np.all(finite) and device_valid is not False else 'device_invalid',label='接触质量未验证；设备有效性单独记录',
@@ -204,7 +213,9 @@ class GnautilusRuntime:
                 self.last_source_loss=dict(reason=reason,source_age_ms=age,sample_index_end=h.sample_index,time_ns=time.time_ns())
                 if not terminal:self.log_feedback('连接',f'输入暂停 · {reason} · 保留模式，等待自动恢复','WARN')
                 if hasattr(h,'vr'):h.vr.stop_test()
-                h.raw.clear();h.filtered.clear();h.notched.clear()
+                # Keep the last waveform visible during reconnect. It is never
+                # fresh evidence; clear it when replacement samples arrive.
+                self.reset_on_resume=True
                 self.last_seq=self.last_counter=None
                 if self.descriptor:h.epoch+=1
             self.input_suspended=True;h.last_packet=None;h.connected=False
@@ -239,11 +250,12 @@ class GnautilusRuntime:
         if hasattr(self.hub,'ml'):return self.hub.intent.readiness()
         return dict(acquisition_active=bool(self.hub.recorder),source_fresh=self.fresh(),source_valid=False,server_fresh=False,
                     epoch=self.hub.epoch,reason='new_model_not_configured',input_origin=None,decision_id=0,model_fresh=False,model_decision={})
-    def model_input(self):
+    def model_input(self,*,require_fresh=True):
         """Future model adapter contract; observing data grants no motion eligibility."""
         with self.hub.lock:
             d=self.descriptor
-            if not d or not self.fresh() or d['source_kind']!='gtec_live':raise ValueError('Fresh verified-origin input required')
+            available=self.fresh() if require_fresh else bool(not self.paused and not self.input_suspended and self.hub.last_packet is not None and 0<=time.monotonic()-self.hub.last_packet<LAN_DELIVERY_GRACE_S)
+            if not d or not available or d['source_kind']!='gtec_live':raise ValueError('Fresh verified-origin input required')
             return dict(schema='gnautilus.model_input.v1',stream_id=d['stream_id'],source_epoch=self.hub.epoch,
                 sample_index_end=self.hub.sample_index,sampling_rate=d['sampling_rate'],channels=d['channels'],
                 configuration_sha256=d['configuration_sha256'],samples=np.asarray(self.hub.raw,dtype='<f4').copy(),descriptor=dict(d),input_origin_monotonic=self.hub.last_packet,
@@ -256,8 +268,10 @@ class GnautilusRuntime:
             if not fresh or time.monotonic()-quality.get('checked_monotonic',-1e9)>=1:
                 quality.update(valid=False,training_mask=[False]*len(quality.get('channels',channels)),good_channels=0,
                     channels=[dict(c,color='gray',training_eligible=False,quality_label='质量状态未知或过期') for c in quality.get('channels',[])])
-            return dict(version='1.0.0',project='EEGMovement',source=dict(device='g.Nautilus',mode='live' if fresh else 'paused' if self.paused else 'waiting',
-                connected=bool(fresh),fresh=fresh,age_ms=round((time.monotonic()-h.last_packet)*1000,2) if h.last_packet else None,
+            connected=bool(h.connected and not self.input_suspended)
+            return dict(version='1.0.0',project='EEGMovement',source=dict(device='g.Nautilus',mode='paused' if self.paused else 'live' if connected else 'waiting',
+                delivery_state='fresh' if fresh else 'delayed' if connected else 'reconnecting',
+                connected=connected,fresh=fresh,age_ms=round((time.monotonic()-h.last_packet)*1000,2) if h.last_packet else None,
                 nominal_sfreq=fs,configured_sfreq=fs,sfreq_measured=None,sampling_rate_source='device_configuration',samples_total=h.sample_index,source_epoch=h.epoch,
                 stream_id=d['stream_id'] if d else None,source_kind=d['source_kind'] if d else None,sequence=self.last_seq,
                 continuous_samples=len(h.raw),endpoint='LAN WebSocket :'+str(self.lan_ws.port) if self.active_transport=='lan_ws' else 'TLS ingest :'+str(self.service.port),error=self.error or ingest.get('error'),stats=dict(gap_count=self.gap_count,last_gap=self.last_gap,recovery_count=self.recovery_count,input_paused=self.input_suspended,active_transport=self.active_transport)),

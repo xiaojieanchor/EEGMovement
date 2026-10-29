@@ -148,3 +148,30 @@ def test_retry_dispatched_before_operator_disconnect_cannot_reopen_link(tmp_path
   m.connection_tick()
  assert b.auto_connect_suspended and b.status['connection_state']=='disconnected_by_operator'
  interface.assert_not_called()
+
+
+def test_failed_physical_tcp_falls_back_to_system_route_without_changing_identity():
+ from gnautilus_ml.ssh import open_compute_socket
+ first,second=Mock(),Mock();first.connect.side_effect=TimeoutError('physical unavailable');progress=Mock()
+ with patch('gnautilus_ml.ssh.physical_interface',return_value=('192.168.0.103',14)),patch('gnautilus_ml.ssh.socket.socket',side_effect=[first,second]):
+  result,address=open_compute_socket(PROFILE,progress)
+ assert result is second and address is None
+ first.close.assert_called_once();second.connect.assert_called_once_with((PROFILE['host'],PROFILE['port']))
+ assert [c.args[0] for c in progress.call_args_list]==['tcp_physical','tcp_system']
+
+
+def test_failed_routes_have_bounded_sockets_and_explicit_diagnostics():
+ from gnautilus_ml.ssh import open_compute_socket
+ first,second=Mock(),Mock()
+ first.connect.side_effect=TimeoutError('fixture physical timeout');second.connect.side_effect=TimeoutError('fixture system timeout')
+ with patch('gnautilus_ml.ssh.physical_interface',return_value=('192.168.0.103',14)),patch('gnautilus_ml.ssh.socket.socket',side_effect=[first,second]):
+  with pytest.raises(ConnectionError,match='A100 TCP'):open_compute_socket(PROFILE)
+ for s in [first,second]:s.close.assert_called_once();s.settimeout.assert_called_with(4)
+
+
+def test_network_failure_retries_indefinitely_with_bounded_backoff_and_no_training(tmp_path):
+ m,b,h=manager(tmp_path)
+ for now in [1,4,9,18,34,50,66]:m.connection_tick(now=now)
+ assert b.connect.call_count==7 and m.retry_delay==15
+ assert b.status['next_retry_monotonic']==81
+ assert not h.intent.start.called

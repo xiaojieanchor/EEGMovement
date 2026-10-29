@@ -76,12 +76,12 @@ def inference_fixture():
         stop_event=Mock(), acquisition=SimpleNamespace(snapshot=lambda:{'active':False}), recorder=None)
     d=dict(channels=[dict(kind='EEG',name='C3')],sampling_rate=8)
     payload=dict(sample_index_end=16,descriptor=d,samples=np.ones((8,1)),source_epoch=2,stream_id='d'*32,input_origin_monotonic=time.monotonic())
-    hub.gnautilus_runtime=SimpleNamespace(model_input=lambda:payload, fresh=lambda:True)
+    hub.gnautilus_runtime=SimpleNamespace(model_input=lambda **kw:payload, fresh=lambda:True)
     def call(method,path,data=None,**kwargs):
         if path=='/inference/start':return dict(generation=7,model_id='model')
         if path=='/inference/predict':return dict(source_epoch=2,sample_index_end=16,model_id='model',probabilities=[.8,.05,.05,.05,.05],eligible=True)
         return {}
-    manager=SimpleNamespace(cached=dict(loaded='model',models=[dict(model_id='model',window_s=1.,algorithm='bandpower_lda')]),bridge=SimpleNamespace(call=call))
+    manager=SimpleNamespace(cached=dict(loaded='model',models=[dict(model_id='model',window_s=1.,hop_s=.1,algorithm='bandpower_lda')]),bridge=SimpleNamespace(call=call))
     intent=MLIntent(hub,manager)
     intent.model_id='model';intent.inference_enabled=True
     hub.stop_event.wait.side_effect=[False,True]

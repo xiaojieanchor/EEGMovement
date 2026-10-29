@@ -22,6 +22,7 @@ from .model_check_v4 import SessionCalibration
 from .session_calibration import CalibrationRequired
 from .refactor_status import RefactorObserver
 from .device_transition import transition_state,retired_action,background_targets,annotate_html,MESSAGE as TRANSITION_MESSAGE
+from .instance import HubInstance,HubAlreadyRunning,ExclusiveHubServer
 
 ROOT=Path(__file__).resolve().parents[1];RUNTIME=ROOT/'hub/runtime';RUNTIME.mkdir(exist_ok=True)
 
@@ -375,6 +376,7 @@ class Hub:
         return snapshot
     def snapshot(self):
         snapshot=self.gnautilus_runtime.snapshot() if self.new_device_mode else self._snapshot_core()
+        snapshot['hub_instance']=dict(pid=os.getpid())
         snapshot['project_phase']=self.transition
         snapshot['public_relay']=self.public_relay.snapshot() if self.public_relay else dict(enabled=False,connected=False)
         snapshot['acquisition']=self.acquisition.snapshot()
@@ -593,10 +595,20 @@ class Handler(BaseHTTPRequestHandler):
         except (KeyError,ValueError,TypeError) as e:self.send(400,{'error':str(e)})
 
 def main():
-    global HUB
     ap=argparse.ArgumentParser();ap.add_argument('--connect-server',action='store_true');ap.add_argument('--open',action='store_true');args=ap.parse_args()
-    config=json.loads((ROOT/'hub/config.json').read_text(encoding='utf-8'));HUB=Hub(config);HUB.start()
-    server=ThreadingHTTPServer((config['web_host'],config['web_port']),Handler);server.daemon_threads=True
+    config=json.loads((ROOT/'hub/config.json').read_text(encoding='utf-8'))
+    try:
+        with HubInstance(RUNTIME/'hub.instance.lock'):
+            # Reserve the web address before Hub construction has side effects.
+            with ExclusiveHubServer((config['web_host'],config['web_port']),Handler) as server:
+                _serve_hub(config,args,server)
+    except HubAlreadyRunning as error:
+        print(str(error),flush=True)
+
+
+def _serve_hub(config,args,server):
+    global HUB
+    HUB=Hub(config);HUB.start()
     (RUNTIME/'hub.pid').write_text(str(os.getpid()));print(f"EEGMovement Hub http://127.0.0.1:{config['web_port']}",flush=True)
     if args.connect_server:
         import getpass

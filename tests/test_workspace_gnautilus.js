@@ -36,6 +36,16 @@ async function boot(file,scripts,status,other={}){
  assert.equal(v.document.querySelectorAll('.studio-primary a').length,5,'original workbench navigation is retained');
  assert.equal(v.writes.length,0,'page load must not start a service or issue device commands');
  assert.equal(v.document.getElementById('relayEeg').textContent,'设备归属未知','a missing authenticated role must remain unknown');
+ const delayed=fixture();delayed.source.fresh=false;delayed.source.delivery_state='delayed';delayed.server={ssh_connected:true,worker_connected:true,host:'fixture-a100',last_health:{device:'A100 fixture'}};
+ const late=await boot('index',['ui-state.js','app.js'],delayed,{'/api/relay/status':{connected:false}});
+ assert.match(late.document.getElementById('sourceStatus').textContent,/数据延迟/);
+ assert.equal(late.document.getElementById('sshStatus').textContent,'已连接 / 加密','public relay state must not overwrite private compute SSH status');
+ assert.equal(late.document.getElementById('serverStatus').textContent,'A100服务已连接');
+ assert(late.painted.some(t=>t.startsWith('±')),'late EEG remains visible with history time labels');
+ const retry=fixture();retry.server={connecting:true,connect_stage:'tcp_system',connect_attempts:3,last_error:'fixture previous timeout'};
+ const progress=await boot('index',['ui-state.js','app.js'],retry);
+ assert.match(progress.document.getElementById('workerStatus').textContent,/系统路由连接/);
+ assert.match(progress.document.getElementById('serverError').textContent,/previous timeout/);
  const relay=await boot('index',['ui-state.js','app.js'],s,{'/api/relay/status':{connected:true,endpoint:'wss://fixture.invalid/relay',onboarding:{state:'ready',message:'自动归属已就绪'},role_states:{eeg:{online:false},quest:{online:true}}}});
  assert.equal(relay.document.getElementById('relayEeg').textContent,'等待此类设备连接','a connected Hub does not prove the EEG agent is online');
  assert.equal(relay.document.getElementById('relayQuest').textContent,'已认证在线 · 自动归属');
