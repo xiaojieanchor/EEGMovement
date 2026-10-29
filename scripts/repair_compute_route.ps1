@@ -1,4 +1,4 @@
-<## Repair only the configured A100 host route for the current physical gateway.
+﻿<## Repair only the configured A100 host route for the current physical gateway.
     Run in an administrator PowerShell. No VPN/default/persistent route changes. ##>
 param([switch]$Restore)
 $ErrorActionPreference = 'Stop'
