@@ -78,6 +78,17 @@ async function boot(file,scripts,status,other={}){
  const report=detail.document.getElementById('acquisitionClientDetails').textContent;
  assert.match(report,/FIXTURE-PC.*1\.1\.5/);assert.match(report,/新鲜状态/);assert.match(report,/通道未知/);assert.match(report,/主机实测率未知/);
  assert.equal(detail.writes.length,0);
+ const measured=fixture();measured.source.sfreq_measured=247.6;measured.source.loss_pct=.25;
+ measured.gnautilus.observations={reception:{state:'measured',window_s:8,missing_samples:5,received_samples:1995},electrical:{state:'measured',good_channels:17,total_channels:18,electrical_valid:false,channels:channels.filter(c=>c.kind==='EEG').map((c,i)=>({channel_id:c.id,column_index:i+1,valid:i!==0,reasons:i===0?['flatline']:[],rms_uv:i===0?.0001:7,peak_to_peak_uv:i===0?.0003:20}))}};
+ const calculated=await boot('index',['ui-state.js','app.js'],measured);
+ assert.equal(calculated.document.getElementById('notice'),null,'obsolete transition banner must be removed');
+ assert.equal(calculated.document.getElementById('rate').textContent,'247.6');assert.equal(calculated.document.getElementById('good').textContent,'17');assert.equal(calculated.document.getElementById('loss').textContent,'0.25');
+ const originalCard=calculated.document.getElementById('channelGrid').firstElementChild;
+ assert.match(originalCard.textContent,/平线/);assert.match(originalCard.textContent,/RMS/);assert.doesNotMatch(originalCard.textContent,/模型未配置/);
+ measured.source.fresh=false;measured.gnautilus.observations.electrical.state='retained';measured.gnautilus.observations.reception.state='retained';
+ await calculated.timers.find(t=>t.ms===200).fn();
+ assert.equal(calculated.document.getElementById('channelGrid').firstElementChild,originalCard,'telemetry cannot rebuild channel cards each poll');
+ assert.match(originalCard.textContent,/上次/);assert.equal(calculated.document.getElementById('rate').textContent,'247.6');assert.equal(calculated.document.getElementById('good').textContent,'17');assert.equal(calculated.document.getElementById('loss').textContent,'0.25');
  const stableStatus=fixture();stableStatus.server={ssh_connected:true,worker_connected:true,last_error:'Electrical quality rejected; hybrid state reset'};
  const stableIntent={inference_enabled:true,fresh:false,error:'Electrical quality rejected; hybrid state reset',control:{enabled:false}};
  const stable=await boot('index',['ui-state.js','app.js'],stableStatus,{'/api/intent/status':stableIntent});

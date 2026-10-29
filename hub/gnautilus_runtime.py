@@ -11,6 +11,7 @@ from gnautilus_acquisition.storage import StreamJournal
 from .gnautilus import IngestService
 from .lan_ws import LanHubServer,DEFAULT_LAN_WS_PORT
 from gnautilus_acquisition.timing import ACTION_FRESHNESS_S,LAN_DELIVERY_GRACE_S
+from .stream_observations import ReceptionObservations,OVERVIEW_ELECTRICAL_POLICY
 
 
 class SessionRecorder:
@@ -46,6 +47,7 @@ class GnautilusRuntime:
         self.lan_ws=LanHubServer(self,port=lan_ws_port)
         self.feedback_boot_id=secrets.token_hex(8);self.feedback_logs=collections.deque(maxlen=20);self.feedback_log_seq=0
         self.paused=False;self.error=None;self.last_source_loss=None;self.stop_event=threading.Event();self.reset_on_resume=False
+        self.reception=ReceptionObservations();self.overview_electrical={};self.overview_checked=0
     def start(self):
         self.service.start();self.lan_ws.start();self.thread=threading.Thread(target=self._tick,daemon=True,name='g.Nautilus lifecycle');self.thread.start()
     def execution(self):
@@ -77,9 +79,30 @@ class GnautilusRuntime:
             try:
                 self.hub.acquisition.expire()
                 self.check_input_health()
+                self.observe_electrical()
             except (ValueError,OSError) as e:self.error=f'{type(e).__name__}: {e}'
     def fresh(self):
         return bool(not self.paused and self.hub.last_packet is not None and 0<=time.monotonic()-self.hub.last_packet<.25)
+    def observe_electrical(self):
+        now=time.monotonic()
+        if now-self.overview_checked<.5:return
+        h=self.hub
+        with h.lock:
+            d=self.descriptor
+            if not d or self.last_accept_monotonic==0 or now-self.last_accept_monotonic>=3:return
+            n=max(3,int(d['sampling_rate']*1.5));ix=[i for i,c in enumerate(d['channels']) if c['kind']=='EEG']
+            if len(h.raw)<n:return
+            epoch=h.epoch;stream=d['stream_id'];end=h.sample_index;values=np.asarray(list(h.raw)[-n:],dtype=float)[:,ix].T
+            names=[d['channels'][i]['name'] for i in ix]
+        from gnautilus_ml.quality import inspect_signal
+        q=inspect_signal(values,names,d['sampling_rate'],OVERVIEW_ELECTRICAL_POLICY)
+        for row,i in zip(q['channels'],ix):row.update(channel_id=d['channels'][i]['id'],column_index=i,physical_index=d['channels'][i]['physical_index'],unit='uV')
+        q.update(good_channels=sum(row['valid'] for row in q['channels']),total_channels=len(ix),unknown_channels=0,
+            source_epoch=epoch,stream_id=stream,sample_index_end=end,checked_monotonic=now,window_s=1.5,
+            measurement='software electrical screen; not electrode contact impedance',contact_quality_known=False)
+        with h.lock:
+            if h.epoch==epoch and self.descriptor['stream_id']==stream:
+                self.overview_electrical=q;self.overview_checked=now
     def check_input_health(self):
         # A late frame disables action through fresh()/receiver leases, but is
         # not a sample discontinuity. Do not reset model state or labels here.
@@ -93,6 +116,7 @@ class GnautilusRuntime:
             self.source_lost('source_changed')
         with self.hub.lock:
             if old is None or (old['stream_id'],old['epoch'],old['configuration_sha256'],old['channels'])!=(d['stream_id'],d['epoch'],d['configuration_sha256'],d['channels']):
+                self.reception.reset((d['stream_id'],d['epoch'],d['configuration_sha256']));self.overview_electrical={};self.overview_checked=0
                 if hasattr(self.hub,'ml'):self.hub.intent.invalidate('source_configuration_changed',preserve_mode=True)
                 self.last_seq=self.last_counter=None;self.hub.epoch+=1;self.hub.sample_index=0;self.hub.last_packet=None
                 size=max(1,int(d['sampling_rate']*5))
@@ -126,6 +150,7 @@ class GnautilusRuntime:
         channels=[dict(name=c['name'],id=c['id'],kind=c['kind'],unit=c['unit'],color='gray',quality_label='接触质量未测量',
                        training_eligible=False,contact_quality_known=False,finite=bool(np.all(np.isfinite(x[:,i])))) for i,c in enumerate(d['channels'])]
         with h.lock:
+            self.reception.accept((d['stream_id'],d['epoch'],d['configuration_sha256']),header['sample_start'],len(x),header['seq'],now)
             if self.reset_on_resume:
                 h.raw.clear();h.filtered.clear();h.notched.clear();self.reset_on_resume=False
             h.raw.extend(x.tolist());h.filtered.extend(x.tolist()) # Display identity path: no second filter.
@@ -264,6 +289,10 @@ class GnautilusRuntime:
         h=self.hub;d=self.descriptor;ingest=self.service.snapshot();fresh=self.fresh()
         with h.lock:
             channels=d['channels'] if d else [];fs=d['sampling_rate'] if d else None
+            reception=self.reception.snapshot(time.monotonic());electrical=dict(self.overview_electrical)
+            if electrical:
+                electrical['age_ms']=round((time.monotonic()-electrical['checked_monotonic'])*1000,1)
+                electrical['state']='measured' if electrical['source_epoch']==h.epoch and electrical['age_ms']<3000 and not self.input_suspended else 'retained'
             quality=dict(h.quality)
             if not fresh or time.monotonic()-quality.get('checked_monotonic',-1e9)>=1:
                 quality.update(valid=False,training_mask=[False]*len(quality.get('channels',channels)),good_channels=0,
@@ -272,7 +301,7 @@ class GnautilusRuntime:
             return dict(version='1.0.0',project='EEGMovement',source=dict(device='g.Nautilus',mode='paused' if self.paused else 'live' if connected else 'waiting',
                 delivery_state='fresh' if fresh else 'delayed' if connected else 'reconnecting',
                 connected=connected,fresh=fresh,age_ms=round((time.monotonic()-h.last_packet)*1000,2) if h.last_packet else None,
-                nominal_sfreq=fs,configured_sfreq=fs,sfreq_measured=None,sampling_rate_source='device_configuration',samples_total=h.sample_index,source_epoch=h.epoch,
+                nominal_sfreq=fs,configured_sfreq=fs,sfreq_measured=reception['measured_hz'],sampling_rate_source='device_configuration',reception_rate_state=reception['state'],loss_pct=reception['loss_pct'],samples_total=h.sample_index,source_epoch=h.epoch,
                 stream_id=d['stream_id'] if d else None,source_kind=d['source_kind'] if d else None,sequence=self.last_seq,
                 continuous_samples=len(h.raw),endpoint='LAN WebSocket :'+str(self.lan_ws.port) if self.active_transport=='lan_ws' else 'TLS ingest :'+str(self.service.port),error=self.error or ingest.get('error'),stats=dict(gap_count=self.gap_count,last_gap=self.last_gap,recovery_count=self.recovery_count,input_paused=self.input_suspended,active_transport=self.active_transport)),
                 quality=quality,processing=dict(causal=True,bandpass='原厂配置',notch='原厂配置',window_ms=None,hop_ms=None,
@@ -281,7 +310,7 @@ class GnautilusRuntime:
                 performance=dict(errors=0,return_count=0),control=dict(enabled=False,**self.execution(),speed=self.execution()['actual_speed'],yaw_rate=self.execution()['actual_yaw_rate'],reasons=['执行状态以接收端新鲜遥测为准']),
                 vr=h.vr.snapshot() if hasattr(h.vr,'snapshot') else {},recording=dict(active=h.recorder is not None,name=h.recording_name,samples=h.recording_samples),
                 waveforms=dict(raw=list(h.raw)[-int((fs or 1)*3):],filtered=list(h.raw)[-int((fs or 1)*3):],notch50=[],display_sfreq=fs,seconds=3),
-                gnautilus=dict(ingest,last_session=self.last_close,descriptor=d,storage_root=str(self.root/'data/gnautilus'),error=self.error or ingest.get('error'),lan_listener=self.lan_ws.snapshot()),events=list(getattr(h,'events',[]))[:20])
+                gnautilus=dict(ingest,last_session=self.last_close,descriptor=d,storage_root=str(self.root/'data/gnautilus'),error=self.error or ingest.get('error'),lan_listener=self.lan_ws.snapshot(),observations=dict(reception=reception,electrical=electrical)),events=list(getattr(h,'events',[]))[:20])
     def close(self):
         self.stop_event.set();self.source_lost('shutdown');self.lan_ws.close();self.service.close()
         if hasattr(self,'thread'):self.thread.join(1)
