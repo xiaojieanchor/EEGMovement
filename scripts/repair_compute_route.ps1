@@ -3,8 +3,8 @@
 param([switch]$Restore)
 $ErrorActionPreference = 'Stop'
 $projectRoot = Split-Path -Parent $PSScriptRoot
-$profile = Get-Content -LiteralPath (Join-Path $projectRoot 'configs/gnautilus_compute.json') -Raw | ConvertFrom-Json
-$prefix = "$($profile.host)/32"
+$computeProfile = Get-Content -LiteralPath (Join-Path $projectRoot 'configs/gnautilus_compute.json') -Raw | ConvertFrom-Json
+$prefix = "$($computeProfile.host)/32"
 $receiptPath = Join-Path $projectRoot 'hub/runtime/compute-route-repair.json'
 $admin = ([Security.Principal.WindowsPrincipal][Security.Principal.WindowsIdentity]::GetCurrent()).IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)
 if (-not $admin) { throw 'Windows 拒绝非管理员修改主机路由。请用管理员 PowerShell 运行本脚本。' }
